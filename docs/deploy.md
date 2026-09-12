@@ -200,6 +200,23 @@ Other repositories can use it too:
     body: "<b>${{ github.repository }}</b> deployed"
 ```
 
+It prints **nothing on success** — the step's own result already says whether it worked, and
+the answer carries a channel name and a message id that a build log has no reason to keep. A
+failure prints notifio's error body in full, because that is the only thing that says what to
+fix.
+
+There is no flag to turn that around. The message id is available as `steps.<id>.outputs.id`,
+which is where something a later step might want belongs, and which no log sees.
+
+### What a CI log still shows
+
+**The body itself is in the log regardless**, because GitHub echoes a step's `with:` inputs
+before running it. No action can prevent that.
+
+What it does mask is **secrets**: `${{ secrets.NOTIFIO_HOST }}` and `${{ secrets.NOTIFIO_TOKEN }}`
+appear as `***` wherever they are printed. So if part of a notification must not appear in a
+public build log, it has to come from a secret rather than be assembled in the workflow file.
+
 The action is a thin wrapper around `ghactions/notify/notify.sh`, and the smoke test runs that
 script rather than a copy of it, so what CI sends is what was exercised against a real
 instance.

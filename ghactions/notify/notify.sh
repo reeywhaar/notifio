@@ -25,8 +25,9 @@ if [ -n "${NOTIFIO_LINK_PREVIEW:-}" ]; then
 	set -- "$@" --data-urlencode "link_preview=$NOTIFIO_LINK_PREVIEW"
 fi
 
-# The response goes to a file rather than into the log line, so a message is never echoed with
-# the token beside it.
+# The response goes to a file rather than into the log line. Nothing is printed on success: the
+# step's own result already says it worked, and the answer carries a channel name and a message
+# id that a build log has no reason to keep. The id is available as a step output instead.
 out=$(mktemp)
 trap 'rm -f "$out"' EXIT
 
@@ -36,9 +37,15 @@ status=$(curl -sS -o "$out" -w '%{http_code}' -X POST \
 	"$@")
 
 if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-	# notifio's error body names the cause, and it is the only thing worth printing.
+	# A failure prints everything: notifio's error body names the cause and is the only thing
+	# worth having in the log.
 	echo "notifio answered $status:" >&2
 	cat "$out" >&2
 	exit 1
 fi
-echo "sent: $(cat "$out")"
+
+# The message id goes to the step's outputs, where a later step can use it and no log sees it.
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+	id=$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' "$out")
+	echo "id=$id" >>"$GITHUB_OUTPUT"
+fi

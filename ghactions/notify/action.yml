@@ -37,10 +37,16 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  id:
+    description: The provider's message id — a Telegram message_id, or an email Message-ID.
+    value: ${{ steps.send.outputs.id }}
+
 runs:
   using: composite
   steps:
     - name: Send
+      id: send
       shell: bash
       env:
         NOTIFIO_HOST: ${{ inputs.host }}

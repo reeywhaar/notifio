@@ -362,8 +362,15 @@ report its builds. Two secrets, and nothing that says where the message lands:
   with:
     host: ${{ secrets.NOTIFIO_HOST }}
     token: ${{ secrets.NOTIFIO_TOKEN }}
-    body: "🔔 <b>${{ github.repository }}</b> deployed"
+    body: "🔔 **${{ github.repository }}** deployed"
 ```
+
+It prints nothing on success and the failure in full, so a green step stays quiet. The
+provider's message id is available as `outputs.id` rather than printed.
+
+Note that **the body appears in the log either way**: GitHub echoes a step's `with:` inputs
+before running it. Secrets are masked as `***`, so anything that must not be in a public build
+log belongs in one.
 
 The token names the channel and the channel pins its destination, so moving those
 notifications is a config edit on the notifio instance rather than a change in every repository
