@@ -149,13 +149,15 @@ jobs:
         with:
           host: ${{ env.NOTIFIO_HOST }}
           token: ${{ env.NOTIFIO_TOKEN }}
-          # No subject: this token points at a telegram channel, which has no such field and
-          # refuses one. An email channel requires it — see ghactions/notify/action.yml.
+          subject: "${{ github.repository }} published"
+          # Markdown, so the same body works whether this token points at a telegram channel or
+          # a mailbox. The subject becomes a bold title on one and a header on the other.
+          body-type: md
           body: |
-            🔔 <b>${{ github.repository }}</b> published <code>ghcr.io/${{ github.repository }}:latest</code>
+            🔔 Published `ghcr.io/${{ github.repository }}:latest`
 
-            version <code>${{ needs.publish.outputs.version }}</code> by ${{ github.actor }}
-            <a href="https://github.com/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a>
+            - version `${{ needs.publish.outputs.version }}` by ${{ github.actor }}
+            - [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
 
       - name: Notify on failure
         if: ${{ env.CONFIGURED == 'true' && needs.publish.result != 'success' }}
@@ -163,11 +165,12 @@ jobs:
         with:
           host: ${{ env.NOTIFIO_HOST }}
           token: ${{ env.NOTIFIO_TOKEN }}
+          subject: "${{ github.repository }} ${{ needs.test.result != 'success' && 'tests failed' || 'publish failed' }}"
+          body-type: md
           # Which half broke is the first thing worth knowing: a failing test means the commit
           # is bad, a failing publish means the commit is fine and the build is not.
           body: |
-            ❌ <b>${{ github.repository }}</b> ${{ needs.test.result != 'success' && 'tests failed' || 'publish failed' }}
+            ❌ ${{ needs.test.result != 'success' && 'Tests failed' || 'Publish failed' }}, by ${{ github.actor }}
 
-            by ${{ github.actor }}
-            <a href="https://github.com/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a>
-            <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">view run</a>
+            - [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+            - [view the run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})

@@ -2,8 +2,9 @@ package send
 
 import (
 	"strings"
+
+	"notifio/internal/markup"
 	"testing"
-	"time"
 )
 
 func TestTestMessageIsMarkedUp(t *testing.T) {
@@ -48,8 +49,18 @@ func TestTestMessageIsMarkedUp(t *testing.T) {
 		}
 	})
 
-	t.Run("md on email is refused", func(t *testing.T) {
-		if _, err := TestMessage(em, "", "s", BodyMD); err == nil {
+	t.Run("md on email renders", func(t *testing.T) {
+		v, err := TestMessage(em, "", "s", BodyMD)
+		if err != nil {
+			t.Fatalf("md was refused on email: %v", err)
+		}
+		if !strings.Contains(v.Body, "<strong>notifio test</strong>") {
+			t.Errorf("the markdown was not rendered:\n%s", v.Body)
+		}
+	})
+
+	t.Run("an unknown body type is refused", func(t *testing.T) {
+		if _, err := TestMessage(em, "", "s", "sgml"); err == nil {
 			t.Error("the test command bypassed the validator")
 		}
 	})
@@ -61,55 +72,31 @@ func TestTestMessageIsMarkedUp(t *testing.T) {
 	})
 }
 
-// notifio escapes MarkdownV2 for nobody, including itself, so its own test message has to be
-// correct — which is most of what sending one proves.
-func TestTheMarkdownTestMessageEscapesItsDynamicParts(t *testing.T) {
+func TestEscapeHTML(t *testing.T) {
+	if got := markup.EscapeHTML(`a<b>&"c"`); got != `a&lt;b&gt;&amp;"c"` {
+		t.Errorf("EscapeHTML = %q", got)
+	}
+}
+
+// md is CommonMark now, so the test message is written as ordinary markdown and rendered.
+func TestTheMarkdownTestMessageRenders(t *testing.T) {
 	ch := telegramCh()
 	ch.Name = "alerts-2"
 	ch.Pinned.To = []string{"-100"}
 
-	body := testBody(ch, BodyMD, time.Date(2026, 9, 12, 4, 5, 6, 0, time.UTC))
-
-	// The timestamp is the part that would break a real send: it carries - and . and :
-	if !strings.Contains(body, `2026\-09\-12`) {
-		t.Errorf("the timestamp's hyphens are unescaped:\n%s", body)
+	v, err := TestMessage(ch, "", "", BodyMD)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The link label, where a bare . ends the message with a 400.
-	if !strings.Contains(body, `github\.com`) {
-		t.Errorf("the link label's dots are unescaped:\n%s", body)
+	if v.Type != BodyHTML {
+		t.Errorf("a sender was handed %q; only plain and html should reach one", v.Type)
 	}
-	// ...but not the URL inside (), where escaping would corrupt it.
-	if !strings.Contains(body, "("+"https://github.com/reeywhaar/notifio)") {
-		t.Errorf("the link target was escaped and is now wrong:\n%s", body)
-	}
-	if !strings.Contains(body, "*notifio test*") {
-		t.Error("the markdown body carries no bold")
-	}
-	// The channel name sits in a code span, where only ` and \ are reserved — and a channel
-	// name can hold neither, so alerts-2 goes in as it is.
-	if !strings.Contains(body, "`alerts-2`") {
-		t.Errorf("the channel name was mangled:\n%s", body)
-	}
-}
-
-func TestEscapeMarkdownV2(t *testing.T) {
-	for _, r := range markdownV2Special {
-		in := "a" + string(r) + "b"
-		want := "a\\" + string(r) + "b"
-		if got := escapeMarkdownV2(in); got != want {
-			t.Errorf("escapeMarkdownV2(%q) = %q, want %q", in, got, want)
+	for _, want := range []string{"<b>notifio test</b>", "<code>alerts-2</code>", "<a href="} {
+		if !strings.Contains(v.Body, want) {
+			t.Errorf("rendered body has no %s:\n%s", want, v.Body)
 		}
 	}
-	if got := escapeMarkdownV2("plain text 123"); got != "plain text 123" {
-		t.Errorf("escaped something it should not have: %q", got)
-	}
-	if got := escapeMarkdownV2("Дом"); got != "Дом" {
-		t.Errorf("mangled non-ASCII: %q", got)
-	}
-}
-
-func TestEscapeHTML(t *testing.T) {
-	if got := escapeHTML(`a<b>&"c"`); got != `a&lt;b&gt;&amp;"c"` {
-		t.Errorf("escapeHTML = %q", got)
+	if strings.Contains(v.Body, "**") || strings.Contains(v.Body, "- channel") {
+		t.Errorf("the markdown was passed through unrendered:\n%s", v.Body)
 	}
 }

@@ -191,15 +191,15 @@ func TestTheTokenPicksTheValidator(t *testing.T) {
 	tg := h.mint(t, "tg", "alerts")
 	em := h.mint(t, "em", "notices")
 
-	res := h.post(t, tg, url.Values{"body": {"x"}, "subject": {"hi"}})
+	res := h.post(t, tg, url.Values{"body": {"x"}, "from": {"a@x.com"}})
 	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("subject on a telegram token = %d, want 400", res.StatusCode)
+		t.Errorf("from on a telegram token = %d, want 400", res.StatusCode)
 	}
 	res.Body.Close()
 
-	res = h.post(t, em, url.Values{"body": {"x"}, "to": {"a@x.com"}, "body_type": {"md"}})
+	res = h.post(t, em, url.Values{"body": {"x"}, "to": {"a@x.com"}, "body_type": {"sgml"}})
 	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("md on an email token = %d, want 400", res.StatusCode)
+		t.Errorf("an unknown body_type = %d, want 400", res.StatusCode)
 	}
 	res.Body.Close()
 }

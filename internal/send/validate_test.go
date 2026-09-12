@@ -38,9 +38,7 @@ func TestRefusedWhereItHasNoMeaning(t *testing.T) {
 		v    url.Values
 		want string
 	}{
-		{"subject on telegram", telegramCh(), url.Values{"to": {"5"}, "body": {"x"}, "subject": {"hi"}}, `no "subject"`},
 		{"from on telegram", telegramCh(), url.Values{"to": {"5"}, "body": {"x"}, "from": {"a@x.com"}}, `no "from"`},
-		{"md on email", emailCh(), url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "subject": {"s"}, "body": {"x"}, "body_type": {"md"}}, "body_type"},
 		{"channel on telegram", telegramCh(), url.Values{"to": {"5"}, "body": {"x"}, "channel": {"alerts"}}, `no "channel" field`},
 		{"channel on email", emailCh(), url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "subject": {"s"}, "body": {"x"}, "channel": {"notices"}}, `no "channel" field`},
 	}
@@ -234,14 +232,157 @@ func TestHeaderInjectionIsRefused(t *testing.T) {
 	}
 }
 
-func TestSubjectIsRequiredAndNonEmpty(t *testing.T) {
-	base := url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "body": {"x"}}
-	if _, err := Validate(parseForm(t, base), emailCh()); err == nil {
-		t.Error("a missing subject was accepted")
+// A notification that arrives looking slightly odd beats one that did not arrive, so a subject
+// a telegram channel cannot carry becomes a title rather than a refusal.
+func TestASubjectBecomesATitleOnTelegram(t *testing.T) {
+	cases := []struct {
+		bodyType string
+		want     string
+	}{
+		{BodyPlain, "Disk at 91%\n\nit is full"},
+		{BodyHTML, "<b>Disk at 91%</b>\n\nit is full"},
+		// % is not reserved in MarkdownV2, so nothing is escaped here.
+		// md is CommonMark and notifio renders it. Telegram has no <p>, so a paragraph is
+		// just its text.
+		{BodyMD, "<b>Disk at 91%</b>\n\nit is full"},
 	}
-	withBlank := url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "body": {"x"}, "subject": {"   "}}
-	if _, err := Validate(parseForm(t, withBlank), emailCh()); err == nil {
-		t.Error("a whitespace subject was accepted")
+	for _, c := range cases {
+		t.Run(c.bodyType, func(t *testing.T) {
+			v, err := Validate(parseForm(t, url.Values{
+				"to": {"5"}, "subject": {"Disk at 91%"}, "body": {"it is full"},
+				"body_type": {c.bodyType}}), telegramCh())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v.Body != c.want {
+				t.Errorf("body = %q, want %q", v.Body, c.want)
+			}
+		})
+	}
+}
+
+// The title is markup notifio authors, so notifio escapes it — the one place it escapes
+// anything. An unescaped < or * would make Telegram reject the whole message.
+func TestATitleIsEscaped(t *testing.T) {
+	v, err := Validate(parseForm(t, url.Values{
+		"to": {"5"}, "subject": {"<b>a</b> & 100%"}, "body": {"x"}, "body_type": {BodyHTML}}), telegramCh())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(v.Body, "<b>&lt;b&gt;a&lt;/b&gt; &amp; 100%</b>") {
+		t.Errorf("body = %q", v.Body)
+	}
+
+	v, err = Validate(parseForm(t, url.Values{
+		"to": {"5"}, "subject": {"v1.2 <rc>"}, "body": {"x"}, "body_type": {BodyMD}}), telegramCh())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(v.Body, "<b>v1.2 &lt;rc&gt;</b>") {
+		t.Errorf("body = %q", v.Body)
+	}
+}
+
+// One field, one meaning, on every channel.
+func TestMarkdownIsRenderedForBothTypes(t *testing.T) {
+	const source = "**bold** and `code` and [a link](https://example.com)"
+
+	t.Run("telegram gets its own subset", func(t *testing.T) {
+		v, err := Validate(parseForm(t, url.Values{
+			"to": {"5"}, "body": {source}, "body_type": {BodyMD}}), telegramCh())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Type != BodyHTML {
+			t.Errorf("a sender was handed %q; only plain and html should reach one", v.Type)
+		}
+		if v.Requested != BodyMD {
+			t.Errorf("Requested = %q; the log should say what the caller asked for", v.Requested)
+		}
+		want := `<b>bold</b> and <code>code</code> and <a href="https://example.com">a link</a>`
+		if v.Body != want {
+			t.Errorf("body = %q, want %q", v.Body, want)
+		}
+	})
+
+	t.Run("email gets ordinary html", func(t *testing.T) {
+		ch := emailCh()
+		ch.Pinned.From = "n@x.com"
+		v, err := Validate(parseForm(t, url.Values{
+			"to": {"a@x.com"}, "subject": {"s"}, "body": {source}, "body_type": {BodyMD}}), ch)
+		if err != nil {
+			t.Fatalf("md was refused on email: %v", err)
+		}
+		if v.Type != BodyHTML {
+			t.Errorf("Type = %q", v.Type)
+		}
+		for _, want := range []string{"<strong>bold</strong>", "<code>code</code>", `href="https://example.com"`} {
+			if !strings.Contains(v.Body, want) {
+				t.Errorf("rendered body has no %s:\n%s", want, v.Body)
+			}
+		}
+	})
+}
+
+func TestATitleIsOneLine(t *testing.T) {
+	v, err := Validate(parseForm(t, url.Values{
+		"to": {"5"}, "subject": {"  deploy\n  finished  "}, "body": {"x"}}), telegramCh())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Body != "deploy finished\n\nx" {
+		t.Errorf("body = %q; a title that wrapped would not read as one", v.Body)
+	}
+}
+
+func TestAnEmptySubjectAddsNoTitle(t *testing.T) {
+	v, err := Validate(parseForm(t, url.Values{
+		"to": {"5"}, "subject": {"   "}, "body": {"x"}}), telegramCh())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Body != "x" {
+		t.Errorf("body = %q, want no title", v.Body)
+	}
+}
+
+// The limit is counted on what actually gets sent.
+func TestATitleCountsTowardsTheLimit(t *testing.T) {
+	body := strings.Repeat("a", TelegramMaxText-5)
+	v := url.Values{"to": {"5"}, "body": {body}}
+	if _, err := Validate(parseForm(t, v), telegramCh()); err != nil {
+		t.Fatalf("a body just under the limit was refused: %v", err)
+	}
+	v.Set("subject", "a title that pushes it over")
+	if _, err := Validate(parseForm(t, v), telegramCh()); !errors.Is(err, ErrLimit) {
+		t.Errorf("err = %v, want ErrLimit once the title is added", err)
+	}
+}
+
+// Losing the message over a missing header would be the wrong trade; every client shows
+// something here anyway.
+func TestAMissingEmailSubjectDefaults(t *testing.T) {
+	for _, v := range []url.Values{
+		{"to": {"a@x.com"}, "from": {"b@x.com"}, "body": {"x"}},
+		{"to": {"a@x.com"}, "from": {"b@x.com"}, "body": {"x"}, "subject": {"   "}},
+	} {
+		got, err := Validate(parseForm(t, v), emailCh())
+		if err != nil {
+			t.Fatalf("refused %v: %v", v, err)
+		}
+		if got.Subject != NoSubject {
+			t.Errorf("subject = %q, want %q", got.Subject, NoSubject)
+		}
+	}
+}
+
+// Still refused, and the difference matters: a line break in a mail header is injection, not a
+// caller who had nothing to put in the field.
+func TestALineBreakInAnEmailSubjectIsStillRefused(t *testing.T) {
+	v := url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "body": {"x"},
+		"subject": {"hi\r\nBcc: evil@example.com"}}
+	if _, err := Validate(parseForm(t, v), emailCh()); err == nil {
+		t.Error("header injection was accepted")
 	}
 }
 
@@ -344,11 +485,15 @@ func TestLinkPreview(t *testing.T) {
 		}
 	})
 
-	t.Run("refused on email", func(t *testing.T) {
-		v := url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "subject": {"s"},
-			"body": {"x"}, "link_preview": {"false"}}
-		if _, err := Validate(parseForm(t, v), emailCh()); err == nil {
-			t.Error("an email channel accepted link_preview")
+	// Ignored, not refused: there is nothing for it to do on email, and a sender that cannot
+	// know which kind of channel it is talking to should not lose its message over it.
+	t.Run("ignored on email", func(t *testing.T) {
+		for _, want := range []string{"false", "true"} {
+			v := url.Values{"to": {"a@x.com"}, "from": {"b@x.com"}, "subject": {"s"},
+				"body": {"x"}, "link_preview": {want}}
+			if _, err := Validate(parseForm(t, v), emailCh()); err != nil {
+				t.Errorf("an email channel refused link_preview=%s: %v", want, err)
+			}
 		}
 	})
 }

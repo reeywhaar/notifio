@@ -72,7 +72,7 @@ Three rules apply to both types:
 | `body` | 1 | yes | Up to 4096 characters. Over that is `422`, never truncated |
 | `body_type` | 0–1 | no, default `plain` | `plain`, `md`, `html` |
 | `attachments` | 0–10 | no | Each sent as a document. 11 or more is `422` |
-| `link_preview` | 0–1 | no, default `true` | Whether Telegram renders a preview card for a link. `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`, and **anything else is `400`** |
+| `link_preview` | 0–1 | no, default `true` | Whether Telegram expands a link in the body into a preview card below the message. `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`, and **anything else is `400`** |
 | `subject` | — | **refused** | |
 | `from` | — | **refused** | |
 
@@ -106,29 +106,53 @@ recipients whose names are written properly. Repeat `to` instead.
 | `channel` | **400** — the token decides | **400** |
 | `to` | **400** if it differs from the pin | **400** if it differs from the pin, else required |
 | `from` | **400** | **400** if it differs from the pin, else required |
-| `subject` | **400** | required — never pinned, it is the message |
-| `link_preview` | **400** if it differs from the pin | **400** — a client renders what the HTML says |
-| `body_type: md` | accepted | **400** |
+| `link_preview` | **400** if it differs from the pin | **ignored** — email has no preview cards |
 | a second `to` | **400** | accepted |
 
-A caller that posts a `subject` to a telegram channel believes it will be seen. Ignoring it
-delivers a message with its title silently removed, forever, and nothing in any log says so.
-Refusing costs that caller one 400 and one minute.
+`channel` is the entry most likely to be hit — somebody copying an example from another service,
+or from an older draft of this one. It is refused rather than ignored because the token already
+decided the channel, and a field that does nothing teaches a caller that it does something.
 
-`channel` is refused for the same reason and is the entry most likely to be hit — somebody
-copying an example from another service, or from an older draft of this one.
+**There are two kinds of mismatch here, and only one of them is an error.**
+
+A field that would *silently do nothing* is refused: `channel` was already decided by the token,
+and `from` has nowhere to go on a Telegram message. Accepting either would teach a caller that
+it works.
+
+A field the type simply *cannot use* is absorbed instead. A `subject` becomes a bold title on
+Telegram, a missing one becomes `No subject` on email, and `link_preview` is ignored on email.
+A notification that arrives looking slightly odd beats one that did not arrive, and a generic
+sender — a CI job, say — cannot know which kind of channel a token points at.
 
 ## Body types
 
 | `body_type` | Telegram | email |
 | --- | --- | --- |
-| `plain` (default) | no `parse_mode` | `text/plain; charset=utf-8`, quoted-printable |
-| `md` | `parse_mode: MarkdownV2` | refused |
-| `html` | `parse_mode: HTML` | `text/html; charset=utf-8`, quoted-printable |
+| `plain` (default) | sent as-is | `text/plain; charset=utf-8`, quoted-printable |
+| `md` | **CommonMark**, rendered to Telegram's HTML subset | **CommonMark**, rendered to HTML |
+| `html` | sent as-is with `parse_mode: HTML` | `text/html; charset=utf-8`, quoted-printable |
 
-**If you are generating text, use `html` or `plain`.** `md` is MarkdownV2 and notifio escapes
-nothing — see [channels.md](channels.md#markdown). `notifio channel test <name> --body-type md`
-sends a correctly escaped one to compare against.
+**`md` is CommonMark and means the same thing on every channel.** notifio parses it once and
+renders it for whichever provider the token points at, so one body works against both:
+
+```
+# Deploy finished       telegram  <b>Deploy finished</b>
+**v2.1.0** is live        ──▶     <b>v2.1.0</b> is live
+- 12 commits                      • 12 commits
+
+                        email     <h1>Deploy finished</h1>
+                          ──▶     <p><strong>v2.1.0</strong> is live</p>
+                                  <ul><li>12 commits</li></ul>
+```
+
+Telegram has no block elements — no `<p>`, no `<br>`, no lists, no headings — so structure
+becomes whitespace there: a heading is bold, a bullet is `•`, a rule is `———`, and an image
+becomes a link, because Telegram will not inline one from message text. Details in
+[channels.md](channels.md#markdown).
+
+**Raw HTML inside `md` is dropped** — the tags, not the text between them. A caller who wants
+HTML has `body_type: html`; letting tags through here would mean Telegram rejecting a whole
+message over one it does not know.
 
 ## Attachments
 

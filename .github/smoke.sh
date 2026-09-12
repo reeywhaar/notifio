@@ -170,14 +170,22 @@ want 400 -X POST "$B" -H "Authorization: Bearer $TOK" \
 	--data-urlencode 'body=x'
 [ "$before" = "$(mailcount)" ] || die "a header-injection attempt was delivered"
 
-step "a field the channel type has no use for is refused, not ignored"
-want 400 -X POST "$B" -H "Authorization: Bearer $TG" --data-urlencode 'subject=hi' --data-urlencode 'body=x'
-want 400 -X POST "$B" -H "Authorization: Bearer $TOK" \
-	--data-urlencode 'to=a@example.com' --data-urlencode 'subject=s' \
-	--data-urlencode 'body=x' --data-urlencode 'body_type=md'
+step "a field that would silently do nothing is refused"
+# `from` has nowhere to go on a telegram message, and `channel` was already decided by the
+# token. Both are refused rather than dropped, because a field that does nothing teaches a
+# caller that it does something.
+want 400 -X POST "$B" -H "Authorization: Bearer $TG" \
+	--data-urlencode 'from=a@example.com' --data-urlencode 'body=x'
 want 400 -X POST "$B" -H "Authorization: Bearer $TOK" \
 	--data-urlencode 'to=a@example.com' --data-urlencode 'subject=s' \
 	--data-urlencode 'body=x' --data-urlencode 'channel=notices'
+
+step "a field a type simply cannot use is absorbed, not refused"
+# The other half of the rule: a generic sender cannot know which kind of channel its token
+# points at, and should not lose a notification over that.
+want 200 -X POST "$B" -H "Authorization: Bearer $TOK" \
+	--data-urlencode 'to=a@example.com' --data-urlencode 'subject=s' \
+	--data-urlencode 'body=x' --data-urlencode 'link_preview=false'
 
 step "a pinned channel refuses a redirect but accepts a restatement"
 # `alerts` pins `to`, so a request cannot send it anywhere else.
@@ -264,15 +272,17 @@ step "the notify action sends through a running notifio"
 NOTIFIO_HOST="http://127.0.0.1:$PORT" \
 	NOTIFIO_TOKEN="$FIXED" \
 	NOTIFIO_SUBJECT="notifio published" \
-	NOTIFIO_BODY="🔔 <b>notifio</b> published <code>ghcr.io/reeywhaar/notifio:latest</code>" \
+	NOTIFIO_BODY="🔔 **notifio** published \`ghcr.io/reeywhaar/notifio:latest\`" \
 	ghactions/notify/notify.sh
 sleep 2
 maildev /api/email | python3 -c '
 import json, sys
 m = [x for x in json.load(sys.stdin) if x["subject"] == "notifio published"]
 assert m, "the action did not deliver"
-assert "<b>notifio</b>" in (m[0].get("html") or ""), "the action lost its markup"
-print("   ok   the action delivered, marked up")
+html = m[0].get("html") or ""
+assert "<strong>notifio</strong>" in html, f"the action lost its markup: {html[:200]!r}"
+assert "<code>ghcr.io/reeywhaar/notifio:latest</code>" in html, "code span not rendered"
+print("   ok   the action delivered, its markdown rendered")
 '
 # It has to fail loudly rather than report success on a refusal.
 if NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN=nt_wrong NOTIFIO_BODY=x \
@@ -281,13 +291,49 @@ if NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN=nt_wrong NOTIFIO_BODY=x \
 fi
 printf '   ok   a refusal fails the step\n'
 
-# link_preview is a telegram field, and an email channel refuses it rather than ignoring it.
-if NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN="$FIXED" NOTIFIO_SUBJECT=s \
+# The action can set link_preview without knowing the channel type: email ignores it.
+NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN="$FIXED" NOTIFIO_SUBJECT="ignored flag" \
 	NOTIFIO_BODY=x NOTIFIO_LINK_PREVIEW=false \
-	ghactions/notify/notify.sh >/dev/null 2>&1; then
-	die "an email channel accepted link_preview"
-fi
-printf '   ok   link_preview is refused on an email channel\n'
+	ghactions/notify/notify.sh >/dev/null \
+	|| die "an email channel refused link_preview instead of ignoring it"
+printf '   ok   link_preview is ignored on an email channel\n'
+
+step "md is CommonMark on both channel types"
+# One body, two renderings. The email one is asserted here; the telegram renderer is covered by
+# internal/markup, which needs no bot.
+want 200 -X POST "$B" -H "Authorization: Bearer $TOK" \
+	--data-urlencode 'to=md@example.com' --data-urlencode 'subject=markdown' \
+	--data-urlencode 'body_type=md' \
+	--data-urlencode 'body=**bold** and `code` and [a link](https://example.com)
+
+- one
+- two'
+sleep 2
+maildev /api/email | python3 -c '
+import json, sys
+m = [x for x in json.load(sys.stdin) if x["subject"] == "markdown"]
+assert m, "the markdown message did not arrive"
+html = m[0].get("html") or ""
+for want in ("<strong>bold</strong>", "<code>code</code>", "<li>one</li>"):
+    assert want in html, f"markdown was not rendered: {want!r} missing from {html[:200]!r}"
+assert "**bold**" not in html, "the markdown was passed through unrendered"
+print("   ok   rendered to html on the way to the relay")
+'
+
+step "a subject a telegram channel cannot carry becomes a title"
+# 502 rather than 400: it passed validation and reached a bot that is not real. Before this it
+# was a 400, and a CI job that could not know the channel type lost its notification.
+want 502 -X POST "$B" -H "Authorization: Bearer $TG" \
+	--data-urlencode 'subject=Deploy finished' --data-urlencode 'body=x'
+# ...and an email channel with no subject at all still sends.
+want 200 -X POST "$B" -H "Authorization: Bearer $FIXED" --data-urlencode 'body=no subject here'
+sleep 2
+maildev /api/email | python3 -c '
+import json, sys
+m = [x for x in json.load(sys.stdin) if x["subject"] == "No subject"]
+assert m, "a subjectless email did not get the default"
+print("   ok   telegram takes a title, email defaults the subject")
+'
 
 step "the backup carries an archive and a name, and no authority"
 docker exec notifio notifio backup now

@@ -14,8 +14,11 @@ reading this in a year. This list is one line long.
 | `crypto/rand`, `crypto/sha256`, `crypto/subtle` | stdlib | Minting and checking a token — see [tokens.md](tokens.md#hashing) |
 | `archive/tar`, `compress/gzip` | stdlib | The backup archive |
 | `github.com/spf13/cobra` | v1.10.2 | Subcommands, so `docker exec notifio notifio token add x alerts` reads as what it does |
+| `github.com/yuin/goldmark` | v1.8.6 | CommonMark, so `md` means one thing on every channel — see [channels.md](channels.md#markdown) |
 
-**One direct dependency.**
+**Two direct dependencies**, and the second one bought the removal of a whole class of bug:
+without it `md` was MarkdownV2 passed through on Telegram and refused on email, which put
+eighteen escaping rules on the caller and made one field mean two things.
 
 ## Not used, deliberately
 
@@ -28,8 +31,12 @@ reading this in a year. This list is one line long.
 - **No mail library.** `net/smtp` plus `mime/multipart` is the whole message builder, and the
   parts that are actually hard — RFC 2047 subjects, RFC 2231 filenames, base64 line wrapping —
   are either stdlib or ten lines.
-- **No HTML-to-text renderer and no Markdown renderer.** Both would exist to serve a fallback
-  the caller can produce better. See [channels.md](channels.md#body-types).
+- **No HTML-to-text renderer.** It would exist to serve a plain-text fallback almost nothing
+  reads. The Markdown renderer is a different case and is in.
+- **No HTML sanitizer.** Rendering a caller's Markdown to HTML grants them nothing they did not
+  already have: they hold a token and could have posted that HTML directly with
+  `body_type: html`. Raw HTML inside `md` is dropped anyway, because Telegram refuses a tag it
+  does not know.
 - **No router.** Two exact paths and a catch-all, which is three lines of `http.ServeMux`.
 - **No database, no queue, no scheduler.** A handful of rows in a JSON file, and a send whose
   result is its response.

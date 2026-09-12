@@ -146,7 +146,7 @@ There is **no `channel` field**, and sending one is a `400` rather than being ig
 | `body` | yes | Up to 4096 characters |
 | `body_type` | no | `plain` (default), `md`, `html` |
 | `attachments` | no | Up to 10, each sent as a document |
-| `link_preview` | no | `false` stops Telegram rendering a preview card. Default `true` |
+| `link_preview` | no | `false` stops Telegram expanding a link into a preview card below the message. Default `true` |
 
 ### On an email token
 
@@ -159,8 +159,16 @@ There is **no `channel` field**, and sending one is a `400` rather than being ig
 | `body_type` | no | `plain` (default), `html`. `md` is refused |
 | `attachments` | no | |
 
-A field the type has no use for — `subject` on a telegram token, `md` on an email one — is
-**refused, not ignored**. A silently dropped subject loses somebody's alert title forever.
+**`md` is CommonMark and means the same thing on every channel.** notifio renders it — to
+Telegram's inline-only HTML subset, or to ordinary HTML for mail — so one body works against
+both and there is nothing to escape by hand.
+
+There are two kinds of mismatch, and only one is an error. A field that would **silently do
+nothing** is refused: `channel` was already decided by the token, and `from` has nowhere to go
+on a Telegram message. A field the type simply **cannot use** is absorbed — a `subject` becomes
+a bold title on Telegram, a missing one becomes `No subject` on email, and `link_preview` is
+ignored there. A generic sender cannot know which kind of channel its token points at, and
+should not lose a notification over that.
 
 **What a channel pins, a caller cannot change.** One rule, both types:
 
@@ -227,8 +235,8 @@ provider refused it, with the provider's own words. The full table is in
 Two types. Both are defined in `config.json` and neither needs a restart to add.
 
 **telegram** — a bot token, and optionally a pinned chat. Attachments are sent as documents, so
-an image arrives as a file rather than an inline preview. `md` is MarkdownV2 and notifio
-escapes nothing, so **if you are generating text, use `html` or `plain`**.
+an image arrives as a file rather than an inline preview. A `subject` becomes a bold title,
+since Telegram has none of its own.
 
 **email** — an SMTP relay, with `to` and `from` each pinnable. STARTTLS by default, and notifio
 refuses to send if a relay that was configured for STARTTLS does not offer it. `Date`, `Message-ID` and `MIME-Version` are
@@ -295,8 +303,9 @@ into the volume; see [docs/deploy.md](docs/deploy.md#backups).
 ## How it works
 
 One binary. A request arrives, the bearer token is looked up in `data.json`, and that token
-names a channel in `config.json`. The channel's type picks a validator and a sender; the sender
-talks to Telegram over HTTPS or to a relay over SMTP; the result is the response.
+names a channel in `config.json`. The channel's type picks a validator and a sender; a `md`
+body is rendered for that type; the sender talks to Telegram over HTTPS or to a relay over
+SMTP; and the result is the response.
 
 Both files are watched by mtime, so minting a token or adding a channel needs no restart. If
 `config.json` stops parsing, notifio keeps serving the channels it already had, logs it once,
@@ -314,7 +323,7 @@ the only record.
 - **Several channels in one request.** A fan-out that half succeeds has no honest status code.
   Two tokens, two requests, and you know which one failed.
 - **Templates.** The caller composes the text.
-- **Markdown escaping for Telegram**, or Markdown rendering for email.
+- **MarkdownV2.** `md` is CommonMark, rendered per channel, so one body works everywhere.
 - **Typed Telegram media.** Attachments work; every one is a document. Picking `sendPhoto` by
   content type brings Telegram's album type-mixing rules with it.
 - **`multipart/alternative` email**, or any HTML-to-text fallback.

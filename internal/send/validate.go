@@ -7,7 +7,11 @@ import (
 	"strings"
 
 	"notifio/internal/config"
+	"notifio/internal/markup"
 )
+
+// NoSubject stands in when an email request carries none.
+const NoSubject = "No subject"
 
 // Telegram's own limits. They belong here because they decide a 422 before a byte leaves.
 const (
@@ -23,8 +27,12 @@ type Valid struct {
 	From    string
 	Subject string
 	Body    string
-	Type    string
-	Atts    []Attachment
+	// Type is the markup Body is in, after any conversion: only plain or html reaches a
+	// sender.
+	Type string
+	// Requested is what the caller asked for, which is what gets logged.
+	Requested string
+	Atts      []Attachment
 
 	// LinkPreview is whether Telegram renders a preview card. Default true, which is
 	// Telegram's own.
@@ -56,10 +64,11 @@ func Validate(req *Request, ch *config.Channel) (*Valid, error) {
 }
 
 func validateTelegram(req *Request, ch *config.Channel, body string) (*Valid, error) {
-	for _, f := range []string{"subject", "from"} {
-		if req.has(f) {
-			return nil, fmt.Errorf("%w: a telegram channel has no %q", ErrRequest, f)
-		}
+	// `from` still has nowhere to go on a telegram message, so it is still refused. `subject`
+	// does: it becomes a title above the body, because a notification that arrives looking
+	// slightly odd beats one that did not arrive.
+	if req.has("from") {
+		return nil, fmt.Errorf(`%w: a telegram channel has no "from"`, ErrRequest)
 	}
 
 	linkPreview := true
@@ -82,29 +91,41 @@ func validateTelegram(req *Request, ch *config.Channel, body string) (*Valid, er
 		return nil, fmt.Errorf(`%w: a telegram channel takes exactly one "to", got %d`, ErrRequest, len(to))
 	}
 
-	bodyType, err := resolveBodyType(req, BodyPlain, BodyMD, BodyHTML)
+	requested, err := resolveBodyType(req, BodyPlain, BodyMD, BodyHTML)
 	if err != nil {
 		return nil, err
+	}
+	bodyType := requested
+	if requested == BodyMD {
+		// Rendered here rather than in the sender, so `md` means one thing and the senders
+		// only ever see plain or html.
+		if body, err = markup.ToTelegramHTML(body); err != nil {
+			return nil, fmt.Errorf("%w: body is not valid markdown: %v", ErrRequest, err)
+		}
+		bodyType = BodyHTML
 	}
 
 	if len(req.Atts) > TelegramMaxAlbum {
 		return nil, fmt.Errorf("%w: telegram takes at most %d attachments, got %d", ErrLimit, TelegramMaxAlbum, len(req.Atts))
 	}
-	// Refused rather than truncated: the part thrown away is the part most likely to matter.
-	// The caption limit is not checked here — a body too long for one is sent as its own
-	// message instead. See internal/channel/telegram.
+	body = withTitle(req.Subject, body, bodyType)
+
+	// Counted after the title is added, since that is what gets sent. Refused rather than
+	// truncated: the part thrown away is the part most likely to matter. The caption limit is
+	// not checked here — a body too long for one is sent as its own message instead.
 	if n := len([]rune(body)); n > TelegramMaxText {
 		return nil, fmt.Errorf("%w: telegram takes at most %d characters, got %d", ErrLimit, TelegramMaxText, n)
 	}
 
-	return &Valid{Channel: ch, To: to, Body: body, Type: bodyType, Atts: req.Atts,
-		LinkPreview: linkPreview}, nil
+	return &Valid{Channel: ch, To: to, Body: body, Type: bodyType, Requested: requested,
+		Atts: req.Atts, LinkPreview: linkPreview}, nil
 }
 
 func validateEmail(req *Request, ch *config.Channel, body string) (*Valid, error) {
-	if req.has("link_preview") {
-		return nil, fmt.Errorf(`%w: an email channel has no "link_preview"; a client renders what the HTML says`, ErrRequest)
-	}
+	// link_preview is accepted and ignored here rather than refused. A mail client shows a link
+	// as written and never expands it into a preview card, so there is nothing for the setting
+	// to do — and a sender that cannot know which kind of channel it is talking to should not
+	// lose its message over a field that is simply irrelevant.
 
 	to, err := resolve(req, ch, "to")
 	if err != nil {
@@ -136,25 +157,55 @@ func validateEmail(req *Request, ch *config.Channel, body string) (*Valid, error
 		return nil, err
 	}
 
-	if !req.has("subject") {
-		return nil, fmt.Errorf(`%w: "subject" is required on an email channel`, ErrRequest)
+	// A line break is still refused rather than defaulted: that is header injection, which is
+	// a different thing from a caller who had nothing to put in the field.
+	if err := noCRLF(req.Subject, "subject"); err != nil {
+		return nil, err
 	}
 	subject := strings.TrimSpace(req.Subject)
 	if subject == "" {
-		return nil, fmt.Errorf(`%w: "subject" is empty`, ErrRequest)
-	}
-	if err := noCRLF(subject, "subject"); err != nil {
-		return nil, err
+		// Every mail client shows something here anyway, and refusing the send would lose the
+		// message over a missing header.
+		subject = NoSubject
 	}
 
-	bodyType, err := resolveBodyType(req, BodyPlain, BodyHTML)
+	requested, err := resolveBodyType(req, BodyPlain, BodyMD, BodyHTML)
 	if err != nil {
 		return nil, err
 	}
+	bodyType := requested
+	if requested == BodyMD {
+		if body, err = markup.ToHTML(body); err != nil {
+			return nil, fmt.Errorf("%w: body is not valid markdown: %v", ErrRequest, err)
+		}
+		bodyType = BodyHTML
+	}
 
 	return &Valid{Channel: ch, To: addrs, From: from, Subject: subject, Body: body,
-		Type: bodyType, Atts: req.Atts}, nil
+		Type: bodyType, Requested: requested, Atts: req.Atts}, nil
 }
+
+// withTitle puts a subject above a telegram body, in whatever markup the body is in.
+//
+// Telegram has no subject of its own, and the alternative to this was refusing the request —
+// which loses the notification over a field the caller had no way to know was unwanted.
+//
+// The title is escaped because notifio is authoring this markup rather than relaying the
+// caller's. It is applied after any markdown conversion, so it only ever has to speak plain
+// or HTML.
+func withTitle(subject, body, bodyType string) string {
+	title := collapseSpace(subject)
+	if title == "" {
+		return body
+	}
+	if bodyType == BodyHTML {
+		return "<b>" + markup.EscapeHTML(title) + "</b>\n\n" + body
+	}
+	return title + "\n\n" + body
+}
+
+// collapseSpace flattens a subject to one line. A title that wrapped would not read as one.
+func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // resolve applies the rule every field in [config.Pinned] follows: what the config pins, the
 // config decides.

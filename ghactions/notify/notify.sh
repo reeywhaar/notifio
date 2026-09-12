@@ -15,7 +15,7 @@ set -eu
 # Every field goes through --data-urlencode: -d would send a % or a & in the message raw, which
 # is either an invalid escape or a second field.
 set -- --data-urlencode "body=$NOTIFIO_BODY" \
-	--data-urlencode "body_type=${NOTIFIO_BODY_TYPE:-html}"
+	--data-urlencode "body_type=${NOTIFIO_BODY_TYPE:-md}"
 # Empty means "say nothing about it", which is what an email channel needs: it has neither
 # field and refuses one it is sent.
 if [ -n "${NOTIFIO_SUBJECT:-}" ]; then

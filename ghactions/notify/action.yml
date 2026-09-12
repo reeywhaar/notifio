@@ -18,13 +18,15 @@ inputs:
     description: The message
     required: true
   body-type:
-    description: plain, html, or md on a telegram channel
+    description: >-
+      plain, md or html. md is CommonMark and notifio renders it for whichever channel the
+      token points at, so it is the one that works against both without knowing which.
     required: false
-    default: html
+    default: md
   subject:
     description: >-
-      Required on an email channel and refused on a telegram one, so this is the input to set
-      or leave empty depending on which the token points at. Empty sends no subject at all.
+      A header on an email channel and a bold title on a telegram one, so it is safe to set
+      either way. Empty sends none, and an email channel then says "No subject".
     required: false
     default: ""
   link-preview:

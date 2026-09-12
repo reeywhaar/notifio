@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"notifio/internal/app"
+	"notifio/internal/markup"
 
 	"notifio/internal/channel"
 	"notifio/internal/channel/mail"
@@ -92,7 +92,8 @@ func TestMessage(ch *config.Channel, to, subject, bodyType string) (*Valid, erro
 // testBody renders the same four facts in whichever markup was asked for.
 //
 // Telegram and email do not share one HTML body: Telegram's subset has no <br> and treats a
-// newline as a line break, and email is the other way round.
+// newline as a line break, and email is the other way round. The markdown one is shared,
+// because notifio renders it per channel.
 func testBody(ch *config.Channel, bodyType string, now time.Time) string {
 	stamp := now.Format(time.RFC3339)
 
@@ -100,22 +101,22 @@ func testBody(ch *config.Channel, bodyType string, now time.Time) string {
 	case BodyHTML:
 		if ch.Type == config.TypeTelegram {
 			return "<b>notifio test</b>\n" +
-				"channel <code>" + escapeHTML(ch.Name) + "</code> · " + ch.Type + "\n" +
+				"channel <code>" + markup.EscapeHTML(ch.Name) + "</code> · " + ch.Type + "\n" +
 				"sent " + stamp + " by notifio " + app.Version + "\n" +
 				`<a href="` + app.ProjectURL + `">` + app.ProjectURL + "</a>"
 		}
 		return "<p><b>notifio test</b><br>\n" +
-			"channel <code>" + escapeHTML(ch.Name) + "</code> &middot; " + ch.Type + "<br>\n" +
+			"channel <code>" + markup.EscapeHTML(ch.Name) + "</code> &middot; " + ch.Type + "<br>\n" +
 			"sent " + stamp + " by notifio " + app.Version + "</p>\n" +
 			`<p><a href="` + app.ProjectURL + `">` + app.ProjectURL + "</a></p>"
 
 	case BodyMD:
-		// Escaped by hand, because notifio does not escape MarkdownV2 for anyone — including
-		// itself. Getting this wrong is what the test message is for.
-		return "*notifio test*\n" +
-			"channel `" + ch.Name + "` — " + escapeMarkdownV2(ch.Type) + "\n" +
-			"sent " + escapeMarkdownV2(stamp) + " by notifio " + escapeMarkdownV2(app.Version) + "\n" +
-			"[" + escapeMarkdownV2(app.ProjectURL) + "](" + app.ProjectURL + ")"
+		// Ordinary CommonMark, with nothing escaped by hand: that is the point of rendering
+		// it rather than passing it through.
+		return "**notifio test**\n\n" +
+			"- channel `" + ch.Name + "` — " + ch.Type + "\n" +
+			"- sent " + stamp + " by notifio " + app.Version + "\n\n" +
+			"[" + app.ProjectURL + "](" + app.ProjectURL + ")"
 	}
 
 	return "notifio test\n" +
@@ -123,21 +124,3 @@ func testBody(ch *config.Channel, bodyType string, now time.Time) string {
 		"sent " + stamp + " by notifio " + app.Version + "\n" +
 		app.ProjectURL
 }
-
-// markdownV2Special is every character MarkdownV2 reserves outside an entity.
-const markdownV2Special = "_*[]()~`>#+-=|{}.!\\"
-
-func escapeMarkdownV2(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if strings.ContainsRune(markdownV2Special, r) {
-			b.WriteByte('\\')
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
-
-func escapeHTML(s string) string { return htmlEscaper.Replace(s) }

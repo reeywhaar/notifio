@@ -149,7 +149,7 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 
 	h.Log.Info("sent",
 		"token", tok.Label, "channel", ch.Name, "type", ch.Type,
-		"to", redactTo(ch.Type, v.To), "body_type", v.Type, "attachments", len(v.Atts),
+		"to", redactTo(ch.Type, v.To), "body_type", v.Requested, "attachments", len(v.Atts),
 		"status", http.StatusOK, "dur_ms", ms(started), "id", res.ID, "client", clientIP(r))
 
 	writeJSON(w, http.StatusOK, map[string]any{

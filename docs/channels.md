@@ -87,7 +87,7 @@ Shared by both types:
 | --- | --- | --- |
 | `to` | one chat id or `@channelusername` | one address, or an array of them |
 | `from` | — | one address |
-| `link_preview` | `true` or `false` | — |
+| `link_preview` | `true` or `false` | — (email has no preview cards) |
 
 **Everything outside `pinned` is how to reach the provider; everything inside it is part of the
 message.** That is why they are separate blocks, and it is what makes the rule mechanical
@@ -193,30 +193,65 @@ from the method signature.
 
 ### Markdown
 
-`md` is **MarkdownV2, passed through unescaped.** notifio escapes nothing, because the whole
-point of a markup mode is that some characters are markup and an escaper cannot tell an
-intentional `*` from a literal one.
+`md` is **CommonMark, and notifio renders it** into the subset of HTML the Bot API accepts. It
+means the same thing on an email channel, which is the point: a caller writes one body and it
+works wherever the token happens to send.
 
-MarkdownV2 requires ``_ * [ ] ( ) ~ ` > # + - = | { } . !`` to be backslash-escaped outside of
-entities, and a message that forgets one comes back from Telegram as a `400` whose description
-notifio relays verbatim.
+Telegram's markup is inline-only, so structure has to become whitespace:
 
-**If you are generating text, use `html` or `plain`** — Telegram's HTML mode has four tags to
-worry about instead of eighteen characters, and `plain` has none.
+| CommonMark | Telegram |
+| --- | --- |
+| heading | `<b>…</b>` and a blank line |
+| paragraph | text and a blank line |
+| `- item` | `• item` on its own line |
+| `1. item` | `1. item` on its own line |
+| `> quote` | `<blockquote>` |
+| fenced code | `<pre>` |
+| `---` | `———` |
+| image | a link to it — Telegram will not inline one from message text |
+| raw HTML | **dropped**, tags only; the text between them stays |
 
-`notifio channel test <name> --body-type md` sends a correctly escaped MarkdownV2 message, which
-is a working example of what that escaping costs. The legacy `Markdown` parse
-mode is not offered: Telegram documents it as deprecated and its entity handling differs in
-ways that would need explaining twice.
+**MarkdownV2 is not offered, and that is the decision worth defending.** Passing it through
+would have made `md` mean one thing on Telegram and something else on email, and it puts
+eighteen characters — ``_ * [ ] ( ) ~ ` > # + - = | { } . !`` — on the caller to escape, where
+forgetting one comes back as a `400`. Rendering costs one dependency and removes that class of
+bug entirely.
+
+`html` is passed through untouched, which on Telegram means its short list of inline tags and
+nothing else.
+
+### A subject becomes a title
+
+Telegram has no subject. A request that carries one gets it as a bold first line above the body
+rather than a `400`, because a generic sender cannot know which kind of channel its token points
+at, and a notification that arrives looking slightly odd beats one that did not arrive.
+
+The title is escaped, and it is the only markup notifio authors rather than relays. It is applied
+after any markdown rendering, so it only ever has to speak plain text or HTML. A missing subject
+on an **email** channel becomes `No subject` for the same reason.
+
+A line break in an email subject is still a `400`: that is header injection, which is a different
+thing from a caller who had nothing to put in the field.
 
 ### Errors
 
 Telegram answers `{"ok":false,"error_code":400,"description":"…"}` and the description is
 relayed verbatim as a `502` — it is the only thing that says what to fix.
 
-**`link_preview: false`** sends Telegram's `link_preview_options` rather than the deprecated
-`disable_web_page_preview`. It applies to `sendMessage` only; a caption does not generate a
-preview.
+### Link previews
+
+Telegram expands a link in a message into a **preview card** below it — the page's title, a
+description and an image. For a build notification, which is mostly links, that is a screenful
+of noise per message, so a channel like that wants `"pinned": { "link_preview": false }`.
+
+`link_preview: false` sends Telegram's `link_preview_options` rather than the deprecated
+`disable_web_page_preview`, and applies to `sendMessage` only — a caption on a document does not
+generate a preview in the first place.
+
+**Email has no equivalent and ignores the field.** A mail client shows a link as the message
+wrote it and never fetches the page to expand it, so there is nothing for the setting to turn
+off — and a sender that cannot know which kind of channel it is talking to should not lose a
+message over a field that is merely irrelevant.
 
 A `429` carries `parameters.retry_after`. **notifio does not sleep and retry**; it answers `502`
 with the hint in the message, because holding a caller's HTTP request open through Telegram's
@@ -269,11 +304,8 @@ Structure: no attachments → a single `text/plain` or `text/html` part. With at
 
 **There is no `multipart/alternative` and no auto-generated plain-text twin for an HTML body.**
 Producing one means an HTML-to-text renderer, which is a dependency for a fallback almost
-nothing reads. This is a known gap, not an oversight.
-
-**`body_type: md` is refused for email rather than rendered**, because rendering it means
-owning a CommonMark parser and an HTML sanitizer — two dependencies and a class of bugs — to
-serve a field the caller can render themselves.
+nothing reads. This is a known gap, not an oversight — and a narrower one now that `md` is
+rendered, since the source of a `md` body would make a good plain-text part.
 
 **Any rejected recipient fails the whole send.** A caller that got a `200` must never have to
 wonder who received it.
