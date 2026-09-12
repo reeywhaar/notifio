@@ -1,0 +1,73 @@
+# A working deployment behind caddy-docker-proxy.
+#
+# notifio will not start without /data/config.json. Write it before the first `up` — the keys
+# are in docs/channels.md, because JSON cannot carry comments.
+
+services:
+  notifio:
+    image: ghcr.io/reeywhaar/notifio:latest
+    restart: unless-stopped
+
+    # Both settings are optional and notifio runs with neither. Uncomment the `environment:`
+    # line along with whichever you want — a block whose entries are all commented out fails
+    # with "environment must be a mapping".
+    #
+    #environment:
+    #  # debug, info, warn, error. Default info. It lives here rather than in config.json so
+    #  # it still works when that file does not parse, which is when it is needed most.
+    #  NOTIFIO_LOG_LEVEL: debug
+    #
+    #  # Where to post archives — the backio-agent sidecar below. Unset means no backups.
+    #  # notifio sends the archive and nothing else: the token, the remote and the path all
+    #  # live in the sidecar, so a compromised notifio cannot reach an existing backup.
+    #  NOTIFIO_BACKUP_URL: http://backup:8080/backup
+
+    volumes:
+      # Required. notifio refuses to start without it, because the alternative is credentials
+      # in a directory that disappears with the container.
+      - data:/data
+
+    healthcheck:
+      test: ["CMD", "notifio", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    networks:
+      - caddy
+      #- backup
+
+    labels:
+      caddy: notify.example.com
+      caddy.reverse_proxy: "{{upstreams 80}}"
+      caddy.log.output: stdout
+      caddy.log.format: json
+
+  # The backup sidecar. Uncomment this and NOTIFIO_BACKUP_URL together.
+  #
+  # BACKUP_PASSWORD is not optional in spirit: the archive holds every bot token and relay
+  # password in cleartext, because notifio has to present them to the provider.
+  #
+  # backup:
+  #   image: ghcr.io/reeywhaar/backio-agent:latest
+  #   restart: unless-stopped
+  #   environment:
+  #     BACKIO_HOST: http://backio:8080
+  #     BACKIO_PROVIDER: gdrive
+  #     BACKIO_SUBDIRECTORY: notifio/production
+  #     BACKIO_TOKEN: "<docker exec backio /backio issue-token 'gdrive notifio/production create,read,delete'>"
+  #     BACKUP_PASSWORD: "<a long random string>"   # AES-256 zip before upload
+  #     BACKUP_EXPECT_EVERY: 6h                     # /health goes 503 if nothing arrives
+  #   networks:
+  #     - backup      # reaches notifio
+  #     - backio      # reaches backio itself
+
+volumes:
+  data:
+
+networks:
+  caddy:
+    external: true
+  #backup:
+  #backio:
+  #  external: true

@@ -1,0 +1,50 @@
+name: Notify through notifio
+description: Send a message through a notifio instance.
+
+# A token is issued for one channel and the channel pins its destination, so a caller needs the
+# address, the credential, and the message. Nothing here says where it goes.
+#
+# Usable from another repository as:
+#   uses: reeywhaar/notifio/ghactions/notify@main
+
+inputs:
+  host:
+    description: Base URL of the notifio instance, e.g. https://notify.example.com
+    required: true
+  token:
+    description: A notifio token. The channel it was issued for decides where this lands
+    required: true
+  body:
+    description: The message
+    required: true
+  body-type:
+    description: plain, html, or md on a telegram channel
+    required: false
+    default: html
+  subject:
+    description: >-
+      Required on an email channel and refused on a telegram one, so this is the input to set
+      or leave empty depending on which the token points at. Empty sends no subject at all.
+    required: false
+    default: ""
+  link-preview:
+    description: >-
+      Whether Telegram renders a preview card for a link in the body. Empty sends nothing about
+      it, which is the only value an email channel accepts — a notifier channel is better off
+      pinning "link_preview": false in its config than passing it here.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Send
+      shell: bash
+      env:
+        NOTIFIO_HOST: ${{ inputs.host }}
+        NOTIFIO_TOKEN: ${{ inputs.token }}
+        NOTIFIO_BODY: ${{ inputs.body }}
+        NOTIFIO_BODY_TYPE: ${{ inputs.body-type }}
+        NOTIFIO_SUBJECT: ${{ inputs.subject }}
+        NOTIFIO_LINK_PREVIEW: ${{ inputs.link-preview }}
+      run: ${{ github.action_path }}/notify.sh

@@ -1,0 +1,173 @@
+name: publish
+
+on:
+  push:
+    branches:
+      - main
+  # Kept alongside the push trigger so a failed publish can be retried without an empty commit.
+  workflow_dispatch:
+
+# A newer commit on main should win the race for `latest` rather than queue behind an older one
+# that would overwrite it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Publishing `latest` unconditionally means a broken commit becomes the image everyone pulls.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push to GHCR with the built-in token.
+      packages: write
+
+    outputs:
+      version: ${{ steps.sha.outputs.short }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # Only needed for the final alpine stage's apk step. The Go build is pinned to
+      # $BUILDPLATFORM and cross-compiles, so nothing expensive runs under emulation.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Sign in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            VERSION=${{ steps.sha.outputs.short }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Keeps the package listing to one real platform instead of adding an
+          # "unknown/unknown" attestation entry beside it.
+          provenance: false
+
+      # Steps on this job rather than a job of their own, so they reuse the checkout and the
+      # GHCR login above — a fresh package is private, and a separate job would fail to pull
+      # its own image.
+      #
+      # maildev is a real SMTP server with an HTTP API, which turns every MIME rule in
+      # docs/channels.md into a jq. The Telegram path has no throwaway bot to send to and is
+      # covered by the httptest units in internal/channel/telegram instead.
+      # A step on this job rather than a job of its own, so it reuses the checkout and the
+      # GHCR login above — a fresh package is private, and a separate job would fail to pull
+      # its own image.
+      #
+      # The assertions live in .github/smoke.sh so they can be run against a local build,
+      # which is the only way they get exercised before they run here.
+      - name: Smoke-test the image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:latest
+        run: .github/smoke.sh
+
+  # A job of its own rather than steps on `publish`, because a failing `test` *skips* `publish`
+  # rather than failing it, and a step in a job that never starts cannot report that it never
+  # started. This one runs either way and reads the results off `needs`.
+  #
+  # It notifies through notifio itself, using the action in this repository. The token is issued
+  # for one channel and that channel pins its destination, so there is nothing here that says
+  # where the message lands — two secrets and a body.
+  notify:
+    needs:
+      - test
+      - publish
+    # Not always(): cancel-in-progress means a newer push kills the run in flight, and being
+    # told that a commit you just superseded was cancelled is noise.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Only to check out the local action below.
+      contents: read
+
+    # The secrets context is not available to `if`, so the presence check goes through env.
+    # Without this, a repo that has not set the secrets yet gets a red run on every push — a
+    # broken notifier should not look like a broken build.
+    env:
+      NOTIFIO_HOST: ${{ secrets.NOTIFIO_HOST }}
+      NOTIFIO_TOKEN: ${{ secrets.NOTIFIO_TOKEN }}
+      CONFIGURED: ${{ secrets.NOTIFIO_HOST != '' && secrets.NOTIFIO_TOKEN != '' }}
+
+    steps:
+      # A local action needs the repository on disk. No credentials are kept: this checkout
+      # exists to read one file.
+      - name: Check out
+        if: ${{ env.CONFIGURED == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Notify on success
+        if: ${{ env.CONFIGURED == 'true' && needs.publish.result == 'success' }}
+        uses: ./ghactions/notify
+        with:
+          host: ${{ env.NOTIFIO_HOST }}
+          token: ${{ env.NOTIFIO_TOKEN }}
+          # No subject: this token points at a telegram channel, which has no such field and
+          # refuses one. An email channel requires it — see ghactions/notify/action.yml.
+          body: |
+            🔔 <b>${{ github.repository }}</b> published <code>ghcr.io/${{ github.repository }}:latest</code>
+
+            version <code>${{ needs.publish.outputs.version }}</code> by ${{ github.actor }}
+            <a href="https://github.com/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a>
+
+      - name: Notify on failure
+        if: ${{ env.CONFIGURED == 'true' && needs.publish.result != 'success' }}
+        uses: ./ghactions/notify
+        with:
+          host: ${{ env.NOTIFIO_HOST }}
+          token: ${{ env.NOTIFIO_TOKEN }}
+          # Which half broke is the first thing worth knowing: a failing test means the commit
+          # is bad, a failing publish means the commit is fine and the build is not.
+          body: |
+            ❌ <b>${{ github.repository }}</b> ${{ needs.test.result != 'success' && 'tests failed' || 'publish failed' }}
+
+            by ${{ github.actor }}
+            <a href="https://github.com/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a>
+            <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">view run</a>

@@ -1,0 +1,20 @@
+# What the documentation was last checked against.
+#
+# Each line is a thing that goes stale, the commit it was brought up to date with, and the
+# date. To find what has happened since:
+#
+#     git log <commit>..HEAD
+#
+# Update the line in the same commit that updates the document. A document nobody trusts is
+# worse than no document, because it costs a reader the time to find out.
+#
+# No commits yet — the docs and the code they describe were written together, and the first
+# commit is where these lines start.
+
+sending        (unreleased)  2026-09-12
+channels       (unreleased)  2026-09-12
+tokens         (unreleased)  2026-09-12
+deploy         (unreleased)  2026-09-12
+stack          (unreleased)  2026-09-12
+conventions    (unreleased)  2026-09-12
+readme         (unreleased)  2026-09-12

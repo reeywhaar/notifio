@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "channels": {
+    "alerts": {
+      "type": "telegram",
+      "token": "123456789:AAE-replace-with-your-bot-token",
+      "api_base": "https://api.telegram.org",
+      "max_body": "50MiB",
+      "send_timeout": "60s",
+      "pinned": {
+        "to": "-1001234567890"
+      }
+    },
+    "notices": {
+      "type": "email",
+      "host": "smtp.example.com",
+      "port": 587,
+      "encryption": "starttls",
+      "user": "notifio@example.com",
+      "password": "replace-with-the-relay-password",
+      "max_body": "25MiB",
+      "send_timeout": "60s",
+      "pinned": {
+        "from": "Notifio <notifio@example.com>",
+        "to": ["ops@example.com", "oncall@example.com"]
+      }
+    },
+    "open": {
+      "type": "email",
+      "host": "smtp.example.com",
+      "user": "notifio@example.com",
+      "password": "replace-with-the-relay-password",
+      "pinned": {
+        "from": "Notifio <notifio@example.com>"
+      }
+    }
+  }
+}
