@@ -1,5 +1,14 @@
 # Conventions
 
+## Contents
+
+- [Naming things](#naming-things)
+- [Commit messages](#commit-messages)
+- [Comments](#comments)
+- [Go](#go)
+  - [Tests](#tests)
+- [Time](#time)
+
 ## Naming things
 
 | word | meaning |
@@ -32,6 +41,10 @@ worth doing. What the message must not be is a label: not `fix: headers`, not `u
 not `wip`.
 
 ## Comments
+
+Every document under `docs/` opens with a **Contents** list, generated from its own headings,
+so a reader can see the shape before committing to the prose. A document short enough not to
+need one does not have one.
 
 **Comments are short.** One line, occasionally two. A comment names why a line is the way it is
 and stops.

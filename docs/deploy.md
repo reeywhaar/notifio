@@ -1,5 +1,22 @@
 # Deploy
 
+## Contents
+
+- [The image](#the-image)
+- [Port](#port)
+- [The volume](#the-volume)
+- [Environment](#environment)
+- [Behind caddy-docker-proxy](#behind-caddy-docker-proxy)
+- [Health](#health)
+- [Backups](#backups)
+  - [Restore](#restore)
+- [What the logs contain](#what-the-logs-contain)
+  - [`client`, behind a proxy](#client-behind-a-proxy)
+- [CI](#ci)
+  - [The notify action](#the-notify-action)
+  - [What a CI log still shows](#what-a-ci-log-still-shows)
+- [Development](#development)
+
 ## The image
 
 `ghcr.io/reeywhaar/notifio:latest`, `linux/amd64` and `linux/arm64`. Alpine plus a static

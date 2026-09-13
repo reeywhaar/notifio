@@ -7,6 +7,15 @@ through no other.
 notifio token add grafana alerts
 ```
 
+## Contents
+
+- [The token is the channel](#the-token-is-the-channel)
+- [The file](#the-file)
+- [Labels](#labels)
+- [Format and hashing](#format-and-hashing)
+- [How a running server sees `docker exec`](#how-a-running-server-sees-docker-exec)
+- [When a token's channel is gone](#when-a-tokens-channel-is-gone)
+
 ## The token is the channel
 
 `/api/send` has **no `channel` parameter**. The token resolves to a channel, the channel to a

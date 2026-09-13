@@ -15,6 +15,9 @@ here.
 | [stack.md](stack.md) | Every dependency and why. One line long |
 | [conventions.md](conventions.md) | Naming, commits, comments, Go rules, time |
 
+Each of those opens with its own **Contents**, so a document can be skimmed before it is read.
+`stack.md` has none — it is one section long, which is the point of it.
+
 ## What notifio is, in three sentences
 
 notifio takes a POST and sends it as a notification through the channel its token was issued

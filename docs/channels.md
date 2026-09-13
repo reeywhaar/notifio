@@ -3,6 +3,20 @@
 A channel is a named, configured destination. This document is every key it can have, and then
 what each type does with them.
 
+## Contents
+
+- [The file](#the-file)
+  - [Every key](#every-key)
+  - [`pinned`](#pinned)
+  - [Values are literal](#values-are-literal)
+- [telegram](#telegram)
+  - [Markdown](#markdown)
+  - [A subject becomes a title](#a-subject-becomes-a-title)
+  - [Errors](#errors)
+  - [Link previews](#link-previews)
+- [email](#email)
+  - [The message](#the-message)
+
 ## The file
 
 `/data/config.json`, beside `data.json` in the same volume. Override the path with

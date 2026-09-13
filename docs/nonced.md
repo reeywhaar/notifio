@@ -19,6 +19,22 @@ ntc_1789311374.470c327c.03ed800cea02300d0feaf2199925b569ec80dde7be81c4534e1bebd5
  prefix
 ```
 
+## Contents
+
+- [The three prefixes](#the-three-prefixes)
+- [The format](#the-format)
+- [Making one](#making-one)
+  - [bash](#bash)
+  - [TypeScript](#typescript)
+- [Minting](#minting)
+- [From GitHub Actions](#from-github-actions)
+- [What it costs](#what-it-costs)
+- [A nonced secret is not a bearer token](#a-nonced-secret-is-not-a-bearer-token)
+- [Why plain SHA-256 is enough](#why-plain-sha-256-is-enough)
+- [What it does not do](#what-it-does-not-do)
+- [Standards, and why none of them](#standards-and-why-none-of-them)
+- [The file version](#the-file-version)
+
 ## The three prefixes
 
 The kind is legible from the value itself, before any lookup:

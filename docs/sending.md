@@ -2,6 +2,21 @@
 
 The contract `internal/send` implements.
 
+## Contents
+
+- [The endpoint](#the-endpoint)
+- [Authentication](#authentication)
+- [The three content types](#the-three-content-types)
+- [One field is common; the rest belongs to a type](#one-field-is-common-the-rest-belongs-to-a-type)
+  - [A request on a `telegram` token](#a-request-on-a-telegram-token)
+  - [A request on an `email` token](#a-request-on-an-email-token)
+  - [Refused where it has no meaning](#refused-where-it-has-no-meaning)
+- [Body types](#body-types)
+- [Attachments](#attachments)
+- [Responses](#responses)
+  - [Partial success](#partial-success)
+- [`/healthz`](#healthz)
+
 ## The endpoint
 
 ```
