@@ -11,6 +11,11 @@ Authorization: Bearer ntc_1789313123.5a00d88f.aded0f32fd587cf5f1757…   ← use
 Anything that sees the first can reuse it forever: a log with headers on, a debug proxy, a paste
 into an issue. The second stops working almost immediately.
 
+**That is the whole goal: stop the raw token travelling, so it has nowhere to land.** Not to
+authenticate the message, not to prove possession of a key, not to make a replay impossible —
+those are different problems with heavier answers. This sits deliberately between sending the
+credential and signing the request.
+
 ## Contents
 
 - [The format](#the-format)
@@ -111,18 +116,29 @@ If the base ever grows a field, revisit this — the argument is about *this* ba
 
 ## Standards, and why none of them
 
-No RFC covers exactly this. The near misses, and why each was left alone:
+They all do more than is wanted here, and the extra is what costs.
 
-| | why not |
-| --- | --- |
-| **RFC 9421** *HTTP Message Signatures* | The general form of this, and the right answer if the body is ever covered. Structured fields, derived components and a canonical base mean a caller needs a library, where this needs four lines of shell |
-| **RFC 6238** *TOTP* | Literally a hash over a time counter, but truncated to six digits for humans — and truncation is the part you do not want |
-| **RFC 7616** *HTTP Digest Auth* | The nonce is server-issued, so every send costs a round trip to fetch a challenge |
-| **RFC 5849** *OAuth 1.0a* | The direct ancestor, abandoned for bearer-over-TLS. Its signature base — parameter sorting, double encoding — is the specific mistake this avoids |
-| **JWT with a short `exp`** | Would work, but a JWT *is* a bearer token, and it drags in base64url of two JSON objects plus `alg` confusion to express one timestamp |
-| **HMAC** | Needs `openssl`. See [above](#why-plain-sha-256) |
-| **mTLS** | Stronger, and a CA to run. Wrong size for a tool whose point is a curl one-liner |
+The aim is narrow — keep the credential off the wire — and every standard below answers a
+larger question: *is this message intact, from this sender, and not a replay?* Answering it
+means covering the body, or holding a key pair, or canonicalising the request, and each of
+those buys something notifio is not asking for at a price it would rather not pay.
+
+| | what it also does | what that costs |
+| --- | --- | --- |
+| **RFC 9421** *HTTP Message Signatures* | Covers whichever request components you name | Structured fields, derived components, a canonical base. A caller needs a library where this needs four lines of shell. **The right answer if the body is ever covered** |
+| **RFC 9449** *DPoP* | Binds the token to a key pair the client holds, covers method and URI, and rejects replays by `jti` | Asymmetric keys to generate, store and rotate, and a JWT on every request. Its server-side material is genuinely safer than ours — but it is an OAuth ecosystem feature |
+| **AWS SigV4** | Authenticates the entire request, body included, under a key scoped to a day, a region and a service | Canonicalisation nobody hand-rolls, and hashing the payload means reading the body before authenticating |
+| **RFC 6238** *TOTP* | Nothing more, in fact — it is a hash over a time counter | Truncated to six digits for a human to type, which is the part you do not want |
+| **RFC 7616** *HTTP Digest Auth* | Server-issued nonce, so replay is genuinely prevented | A round trip per send to fetch the challenge |
+| **RFC 5849** *OAuth 1.0a* | Signs the request and its parameters | The direct ancestor, abandoned for bearer-over-TLS. Its signature base — parameter sorting, double encoding — is the specific mistake this avoids |
+| **JWT with a short `exp`** | Carries claims | A JWT *is* a bearer token; and base64url of two JSON objects plus `alg` confusion, to express one timestamp |
+| **mTLS** | Authenticates the connection | A CA to run |
+| **HMAC** instead of a plain hash | A proven MAC rather than one that needs the argument [above](#why-plain-sha-256) | `openssl(1)`, which is in none of alpine, debian-slim or ubuntu |
 
 The closest thing in daily use is the webhook-signing convention — Stripe's `t=…,v1=…`, Slack's
 timestamp plus signature. This is that, minus the body, reusing a header everything already
 knows to redact.
+
+**If the goal ever widens**, the order to reach for these is: cover the body with RFC 9421 and
+`Content-Digest` first, and only then consider DPoP. Both are a different program from this one,
+and neither should be arrived at by accretion.
