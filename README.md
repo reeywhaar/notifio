@@ -22,7 +22,7 @@ app ──POST /api/send  {body:"Disk at 91%"}──▶ notifio ──▶ api.te
 - [How it works](#how-it-works)
 - [What it deliberately does not do](#what-it-deliberately-does-not-do)
 - [Development](#development)
-- Full reference: [docs/](docs/) — [sending](docs/sending.md) · [channels](docs/channels.md) · [tokens](docs/tokens.md) · [deploy](docs/deploy.md)
+- Full reference: [docs/](docs/) — [sending](docs/sending.md) · [channels](docs/channels.md) · [tokens](docs/tokens.md) · [nonced](docs/nonced.md) · [deploy](docs/deploy.md)
 
 ## Setup
 
@@ -117,6 +117,27 @@ recovered. The doubled `notifio notifio` is not a typo: `docker exec` bypasses t
 `ENTRYPOINT`, so the binary has to be named.
 
 The running server picks it up on the next request — there is nothing to restart.
+
+**Or mint one whose secret never crosses the wire:**
+
+```sh
+SECRET=$(docker exec notifio notifio token add grafana alerts --nonced)
+```
+
+The caller then sends a hash of it with a timestamp, good for five minutes, instead of the
+secret itself — so a value captured from a log or a proxy is already useless. **It is still one
+value to configure**: the token id is `sha256(secret)[:8]`, derived by the caller rather than
+handed to it.
+
+```sh
+ID=$(printf %s "$SECRET" | sha256sum | cut -c1-8)
+TS=$(date +%s)
+WIRE="ntc_$TS.$ID.$(printf '%s.%s.%s' "$TS" "$ID" "$SECRET" | sha256sum | cut -d' ' -f1)"
+curl -X POST … -H "Authorization: Bearer $WIRE" --data-urlencode 'body=…'
+```
+
+It costs something real — notifio has to keep that secret in `data.json` in the clear, where a
+bearer token is only ever a hash. [docs/nonced.md](docs/nonced.md) has the trade in full.
 
 ### 4. Send
 
@@ -252,6 +273,7 @@ notifio serve                            the server. the image's CMD
 notifio version
 
 notifio token add <label> <channel>      mint one. prints the secret, once
+          [--nonced]                     ...one whose secret never crosses the wire
 notifio token list [--json]              label, channel, type, created
 notifio token remove <label>
 

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,15 +34,39 @@ const (
 	// FileName is the file inside the data directory.
 	FileName = "data.json"
 
-	// Prefix marks a notifio token in a log somebody is grepping.
+	// Prefix marks a bearer secret in a log somebody is grepping.
 	Prefix = "nt_"
+
+	// SecretPrefix marks the secret of a nonced token. Distinct from [Prefix] because the two
+	// are stored differently and cannot be used interchangeably: this one lives in data.json
+	// in the clear, and is refused if presented as a bearer token.
+	SecretPrefix = "nts_"
+
+	// NoncedPrefix marks what a nonced token puts on the wire, which is not a secret at all:
+	// ntc_<unix seconds>.<token id>.<sha256 hex>.
+	NoncedPrefix = "ntc_"
+
+	// Sep separates the fields. A dot rather than a colon: it is unreserved in a URL, where a
+	// colon is a delimiter, so the value survives being put somewhere it was not meant to go.
+	// No field can contain one — they are digits and hex.
+	Sep = "."
+
+	// Window is how far a nonce may be from now, in either direction, to allow for clock
+	// skew. Five minutes is what Stripe and Slack settled on.
+	Window = 5 * time.Minute
 
 	// secretBytes is 256 bits, which is why the hash below can be a fast one.
 	secretBytes = 32
 
-	// fileVersion is written into the file so a format change is a migration. The change it
-	// is kept for is a token carrying several channels.
-	fileVersion = 1
+	// fileVersion is written into the file so a format change is a migration.
+	//
+	// Version 2 adds `secret` to a row. A file is written as 1 until it actually holds a
+	// nonced token, so an instance that never uses one stays readable by an older binary —
+	// and one that does becomes unreadable by it, deliberately: an older binary would ignore
+	// `secret`, fall back to `hash`, and accept the secret as a bearer token, which is the
+	// exact thing being prevented.
+	fileVersion       = 2
+	fileVersionBearer = 1
 
 	labelMax = 64
 
@@ -53,11 +78,19 @@ const (
 
 // Token is one entry: what it is called, where it may send, and enough to recognise it.
 type Token struct {
-	Label     string `json:"label"`
-	Channel   string `json:"channel"`
-	Hash      string `json:"hash"`
+	Label   string `json:"label"`
+	Channel string `json:"channel"`
+	Hash    string `json:"hash"`
+
+	// Secret is set only on a nonced token, and is the plaintext. A SHA-256 cannot be
+	// verified from a digest of itself, so the server has to keep the thing it is checking
+	// against. See docs/tokens.md.
+	Secret    string `json:"secret,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 }
+
+// Nonced reports whether this token authenticates by nonce rather than as a bearer.
+func (t Token) Nonced() bool { return t.Secret != "" }
 
 // Created is CreatedAt as a time, in UTC like everything else here.
 func (t Token) Created() time.Time { return time.Unix(t.CreatedAt, 0).UTC() }
@@ -132,8 +165,8 @@ func (s *Store) reloadLocked(force bool) error {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return fmt.Errorf("%s: %w", s.path, err)
 	}
-	if f.Version != fileVersion {
-		return fmt.Errorf("%s: version %d, want %d", s.path, f.Version, fileVersion)
+	if f.Version != fileVersion && f.Version != fileVersionBearer {
+		return fmt.Errorf("%s: version %d, want %d or %d", s.path, f.Version, fileVersionBearer, fileVersion)
 	}
 	for i, t := range f.Tokens {
 		if t.Label == "" {
@@ -174,9 +207,21 @@ func (s *Store) Count() (int, error) {
 	return len(list), err
 }
 
-// Create mints a token for one channel and returns the secret, which is not stored and cannot
-// be recovered.
+// Create mints a bearer token for one channel and returns the secret, which is stored only as
+// a hash and cannot be recovered.
 func (s *Store) Create(label, channel string) (string, error) {
+	return s.create(label, channel, false)
+}
+
+// CreateNonced mints a token that authenticates by nonce.
+//
+// Its secret is kept in data.json in the clear, because verifying a SHA-256 means recomputing
+// it. That is the trade: the secret never crosses the wire, and it sits on the disk instead.
+func (s *Store) CreateNonced(label, channel string) (string, error) {
+	return s.create(label, channel, true)
+}
+
+func (s *Store) create(label, channel string, nonced bool) (string, error) {
 	if err := ValidLabel(label); err != nil {
 		return "", err
 	}
@@ -191,13 +236,17 @@ func (s *Store) Create(label, channel string) (string, error) {
 
 	// Minted in a loop so an id collision cannot happen rather than being unlikely. Two
 	// attempts is already beyond astronomical; ten is free.
+	prefix := Prefix
+	if nonced {
+		prefix = SecretPrefix
+	}
 	var secret, hash string
 	for attempt := 0; ; attempt++ {
 		raw := make([]byte, secretBytes)
 		if _, err := rand.Read(raw); err != nil {
 			return "", err
 		}
-		secret = Prefix + base64.RawURLEncoding.EncodeToString(raw)
+		secret = prefix + base64.RawURLEncoding.EncodeToString(raw)
 		hash = hashOf(secret)
 		id := Token{Hash: hash}.ID()
 		if !slices.ContainsFunc(s.tokens, func(t Token) bool { return t.ID() == id }) {
@@ -208,12 +257,16 @@ func (s *Store) Create(label, channel string) (string, error) {
 		}
 	}
 
-	s.tokens = append(s.tokens, Token{
+	row := Token{
 		Label:     label,
 		Channel:   channel,
 		Hash:      hash,
 		CreatedAt: time.Now().UTC().Unix(),
-	})
+	}
+	if nonced {
+		row.Secret = secret
+	}
+	s.tokens = append(s.tokens, row)
 	if err := s.writeLocked(); err != nil {
 		return "", err
 	}
@@ -269,6 +322,11 @@ func (s *Store) Verify(secret string) (Token, bool, error) {
 	var found Token
 	ok := false
 	for _, t := range s.tokens {
+		// A nonced token's secret would hash to its stored hash, so without this it would work
+		// as a bearer token and the whole point of it would be optional.
+		if t.Nonced() {
+			continue
+		}
 		if subtle.ConstantTimeCompare([]byte(t.Hash), []byte(want)) == 1 {
 			found, ok = t, true
 		}
@@ -276,9 +334,98 @@ func (s *Store) Verify(secret string) (Token, bool, error) {
 	return found, ok, nil
 }
 
+// VerifyNonced checks what a nonced token puts on the wire:
+//
+//	ntc_<unix seconds>.<token id>.<sha256 hex of "<unix seconds>.<token id>.<secret>">
+//
+// The secret goes last in the hashed base, which is what keeps SHA-256's length-extension
+// property from mattering here: a forged digest would be for a shape the server never builds.
+//
+// A false result means the value was not good. The error means the file could not be re-read.
+func (s *Store) VerifyNonced(wire string, now time.Time) (Token, bool, error) {
+	rest, ok := strings.CutPrefix(wire, NoncedPrefix)
+	if !ok {
+		return Token{}, false, nil
+	}
+	parts := strings.Split(rest, Sep)
+	if len(parts) != 3 {
+		return Token{}, false, nil
+	}
+	nonce, id, mac := parts[0], parts[1], parts[2]
+
+	// Each field is checked for shape before anything is looked up, so the base cannot be made
+	// ambiguous by a value that merely looks like one.
+	if !isDigits(nonce) || len(nonce) > 20 {
+		return Token{}, false, nil
+	}
+	if len(id) != IDLen || !isHex(id) {
+		return Token{}, false, nil
+	}
+	if len(mac) != sha256.Size*2 || !isHex(mac) {
+		return Token{}, false, nil
+	}
+	ts, err := strconv.ParseInt(nonce, 10, 64)
+	if err != nil {
+		return Token{}, false, nil
+	}
+	if d := now.Sub(time.Unix(ts, 0)); d > Window || d < -Window {
+		return Token{}, false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(false); err != nil {
+		return Token{}, false, err
+	}
+	var found Token
+	matched := false
+	for _, t := range s.tokens {
+		if !t.Nonced() || t.ID() != id {
+			continue
+		}
+		want := hashOf(nonce + Sep + id + Sep + t.Secret)
+		if subtle.ConstantTimeCompare([]byte(mac), []byte(want)) == 1 {
+			found, matched = t, true
+		}
+	}
+	return found, matched, nil
+}
+
+// Sign builds what a caller puts on the wire. It exists so the server can prove its own
+// documentation, and so `channel test` and the tests do not hand-roll the format.
+func Sign(id, secret string, now time.Time) string {
+	nonce := strconv.FormatInt(now.UTC().Unix(), 10)
+	return NoncedPrefix + nonce + Sep + id + Sep + hashOf(nonce+Sep+id+Sep+secret)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // writeLocked replaces the file atomically, so a reader never sees a half-written one.
 func (s *Store) writeLocked() error {
-	f := file{Version: fileVersion, Tokens: s.tokens}
+	// Only claim version 2 once something in the file needs it.
+	f := file{Version: fileVersionBearer, Tokens: s.tokens}
+	if slices.ContainsFunc(s.tokens, Token.Nonced) {
+		f.Version = fileVersion
+	}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

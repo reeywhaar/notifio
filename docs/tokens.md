@@ -84,6 +84,9 @@ hash here would only slow every send.
 
 **The secret is printed once and is not stored.** A lost token is removed and minted again.
 
+A token minted with `--nonced` is the exception: its secret *is* stored, because verifying a
+hash means recomputing it. What that buys and what it costs is [nonced.md](nonced.md).
+
 ## How a running server sees `docker exec`
 
 `docker exec notifio notifio token add x alerts` is a **second process**. It writes the file;

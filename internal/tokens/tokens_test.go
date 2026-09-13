@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func open(t *testing.T) (*Store, string) {
@@ -247,5 +248,121 @@ func TestIDsAreDistinct(t *testing.T) {
 	}
 	if len(seen) != 50 {
 		t.Errorf("%d distinct ids for 50 tokens", len(seen))
+	}
+}
+
+func TestNoncedRoundTrip(t *testing.T) {
+	s, _ := open(t)
+	secret, err := s.CreateNonced("ci", "tg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(secret, SecretPrefix) {
+		t.Errorf("secret %q has no %q prefix", secret, SecretPrefix)
+	}
+	list, _ := s.List()
+	id := list[0].ID()
+	now := time.Now()
+
+	wire := Sign(id, secret, now)
+	if !strings.HasPrefix(wire, NoncedPrefix) {
+		t.Errorf("wire value %q has no %q prefix", wire, NoncedPrefix)
+	}
+	if n := strings.Count(wire, Sep); n != 2 {
+		t.Errorf("wire value %q has %d separators, want 2", wire, n)
+	}
+
+	tok, ok, err := s.VerifyNonced(wire, now)
+	if err != nil || !ok {
+		t.Fatalf("VerifyNonced = %v, %v", ok, err)
+	}
+	if tok.Label != "ci" || tok.Channel != "tg" {
+		t.Errorf("returned %+v", tok)
+	}
+}
+
+// The whole point: what crosses the wire is not the credential.
+func TestTheWireValueIsNotTheSecret(t *testing.T) {
+	s, _ := open(t)
+	secret, _ := s.CreateNonced("ci", "tg")
+	list, _ := s.List()
+	wire := Sign(list[0].ID(), secret, time.Now())
+
+	if strings.Contains(wire, secret) {
+		t.Fatal("the secret is in the wire value")
+	}
+	// And a captured one is useless once the window passes.
+	if _, ok, _ := s.VerifyNonced(wire, time.Now().Add(Window+time.Minute)); ok {
+		t.Error("a stale nonce was accepted")
+	}
+	if _, ok, _ := s.VerifyNonced(wire, time.Now().Add(-Window-time.Minute)); ok {
+		t.Error("a nonce from the future was accepted")
+	}
+	// Inside the window it still works, in both directions, for clock skew.
+	for _, skew := range []time.Duration{-Window + time.Second, 0, Window - time.Second} {
+		if _, ok, _ := s.VerifyNonced(wire, time.Now().Add(skew)); !ok {
+			t.Errorf("a nonce %v out was refused", skew)
+		}
+	}
+}
+
+// A nonced secret must not work as a bearer token, or the protection would be optional.
+func TestANoncedSecretIsNotABearerToken(t *testing.T) {
+	s, _ := open(t)
+	secret, err := s.CreateNonced("ci", "tg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Verify(secret); ok {
+		t.Fatal("a nonced secret was accepted as a bearer token")
+	}
+}
+
+// ...and the two kinds do not bleed into each other.
+func TestABearerTokenIsNotNonced(t *testing.T) {
+	s, _ := open(t)
+	secret, err := s.Create("plain", "tg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.List()
+	if list[0].Nonced() {
+		t.Error("a bearer token reports itself nonced")
+	}
+	if list[0].Secret != "" {
+		t.Error("a bearer secret was stored")
+	}
+	// It has an id, but signing with it cannot verify: there is no stored secret to check.
+	if _, ok, _ := s.VerifyNonced(Sign(list[0].ID(), secret, time.Now()), time.Now()); ok {
+		t.Error("a bearer token verified as nonced")
+	}
+}
+
+func TestNoncedRejections(t *testing.T) {
+	s, _ := open(t)
+	secret, _ := s.CreateNonced("ci", "tg")
+	list, _ := s.List()
+	id := list[0].ID()
+	now := time.Now()
+	good := Sign(id, secret, now)
+
+	cases := map[string]string{
+		"no prefix":        strings.TrimPrefix(good, NoncedPrefix),
+		"bearer prefix":    Prefix + strings.TrimPrefix(good, NoncedPrefix),
+		"empty":            "",
+		"too few fields":   NoncedPrefix + "123" + Sep + id,
+		"too many fields":  good + Sep + "extra",
+		"nonce not digits": Sign(id, secret, now)[:len(NoncedPrefix)] + "12a4567890" + good[len(NoncedPrefix)+10:],
+		"unknown id":       NoncedPrefix + "1789310655" + Sep + "deadbeef" + Sep + strings.Repeat("a", 64),
+		"wrong mac":        good[:len(good)-1] + map[bool]string{true: "0", false: "1"}[good[len(good)-1] == '1'],
+		"short mac":        NoncedPrefix + "1789310655" + Sep + id + Sep + "abc",
+		"uppercase mac":    strings.ToUpper(good),
+	}
+	for name, wire := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, ok, _ := s.VerifyNonced(wire, now); ok {
+				t.Errorf("accepted %q", wire)
+			}
+		})
 	}
 }

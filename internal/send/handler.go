@@ -123,15 +123,21 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auth first, and from the headers alone: a token in the body could not be checked until
-	// the body was read, which would let a stranger make notifio buffer a 25 MB upload.
-	tok, ok, err := h.Tokens.Verify(bearer(r))
+	// the body was read, which would let a stranger make notifio buffer a 25 MB upload. That
+	// holds for a nonced token too, which covers only the nonce and the id.
+	presented := bearer(r)
+	kind := "bearer"
+	if strings.HasPrefix(presented, tokens.NoncedPrefix) {
+		kind = "nonced"
+	}
+	tok, ok, err := h.verify(presented)
 	if err != nil {
 		h.Log.Error("token file unreadable", "error", err)
 		writeError(w, http.StatusInternalServerError, codeConfig, "the token file could not be read")
 		return
 	}
 	if !ok {
-		h.Log.Warn("rejected", "reason", "unknown token", "client", clientIP(r))
+		h.Log.Warn("rejected", "reason", "unknown token", "auth", kind, "client", clientIP(r))
 		writeError(w, http.StatusUnauthorized, codeAuth, "unknown token")
 		return
 	}
@@ -178,7 +184,7 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.Log.Info("sent",
-		"token", tok.Label, "channel", ch.Name, "type", ch.Type,
+		"token", tok.Label, "auth", kind, "channel", ch.Name, "type", ch.Type,
 		"to", redactTo(ch.Type, v.To), "body_type", v.Requested, "attachments", len(v.Atts),
 		"status", http.StatusOK, "dur_ms", ms(started), "id", res.ID, "client", clientIP(r))
 
@@ -226,6 +232,15 @@ func (h *Handler) failSend(w http.ResponseWriter, r *http.Request, tok tokens.To
 		body["partial"] = true
 	}
 	writeJSON(w, status, body)
+}
+
+// verify picks the check from the value's own prefix, so the two kinds cannot be confused for
+// one another and neither can be presented as the other.
+func (h *Handler) verify(presented string) (tokens.Token, bool, error) {
+	if strings.HasPrefix(presented, tokens.NoncedPrefix) {
+		return h.Tokens.VerifyNonced(presented, time.Now())
+	}
+	return h.Tokens.Verify(presented)
 }
 
 func bearer(r *http.Request) string {

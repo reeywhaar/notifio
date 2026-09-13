@@ -10,6 +10,7 @@ here.
 | [sending.md](sending.md) | **The contract.** The endpoint, the three content types, auth, the field tables, every status code |
 | [channels.md](channels.md) | **Every config key**, and both providers in detail |
 | [tokens.md](tokens.md) | `data.json`, the one-token-one-channel binding, the hashing, the reload |
+| [nonced.md](nonced.md) | Tokens whose secret never crosses the wire: the format, the trade, why plain SHA-256 |
 | [deploy.md](deploy.md) | Image, environment, the `/data` requirement, caddy, backups, logs, CI |
 | [stack.md](stack.md) | Every dependency and why. One line long |
 | [conventions.md](conventions.md) | Naming, commits, comments, Go rules, time |

@@ -347,6 +347,38 @@ docker logs notifio 2>&1 | grep -q '"client":"1.2.3.4"' \
 	&& die "the caller's invented address was believed"
 printf '   ok   the rightmost entry wins and the prefix is ignored\n'
 
+step "a nonced token sends without its secret crossing the wire"
+NSECRET=$(docker exec notifio notifio token add nonced fixed --nonced)
+# Derived from the secret, not looked up: a caller is given one value, same as a bearer token.
+NID=$(printf %s "$NSECRET" | sha256sum | cut -c1-8)
+docker exec notifio notifio token list --json \
+	| grep -q "\"id\": \"$NID\"" || die "the derived id does not match the server's" 
+case "$NSECRET" in
+nts_*) ;;
+*) die "token add --nonced printed something other than a nonced secret" ;;
+esac
+
+TS=$(date +%s)
+WIRE="ntc_$TS.$NID.$(printf '%s.%s.%s' "$TS" "$NID" "$NSECRET" | sha256sum | cut -d' ' -f1)"
+want 200 -X POST "$B" -H "Authorization: Bearer $WIRE" \
+	--data-urlencode 'subject=nonced' --data-urlencode 'body=x'
+
+# The secret itself must not work as a bearer token, or the protection would be optional.
+want 401 -X POST "$B" -H "Authorization: Bearer $NSECRET" \
+	--data-urlencode 'subject=s' --data-urlencode 'body=x'
+
+# And a captured value stops working once the window passes.
+OLD=$((TS - 600))
+STALE="ntc_$OLD.$NID.$(printf '%s.%s.%s' "$OLD" "$NID" "$NSECRET" | sha256sum | cut -d' ' -f1)"
+want 401 -X POST "$B" -H "Authorization: Bearer $STALE" \
+	--data-urlencode 'subject=s' --data-urlencode 'body=x'
+
+docker logs notifio 2>&1 | grep -q '"auth":"nonced"' || die "the log does not record the auth kind"
+for secret in "$NSECRET"; do
+	if docker logs notifio 2>&1 | grep -qF "$secret"; then die "the nonced secret is in the log"; fi
+done
+printf '   ok   sent by hash, secret refused as bearer, stale nonce refused\n'
+
 step "a credential minted by a second process reaches the log"
 # docker exec is a different process, so this line is the only trace the server has.
 docker exec notifio notifio token add audited notices >/dev/null
