@@ -15,10 +15,11 @@ app ──POST /api/send  {body:"Disk at 91%"}──▶ notifio ──▶ api.te
 
 - [Setup](#setup) — [1. Write config.json](#1-write-configjson) · [2. Run it](#2-run-it) · [3. Mint a token](#3-mint-a-token) · [4. Send](#4-send)
 - [Usage](#usage) — the endpoint, the three content types, curl and TypeScript
-- [Channels](#channels)
-- [Command line](#command-line)
-- [Configuration](#configuration)
-- [Backups](#backups)
+- [Channels](#channels) — telegram and email, and what each will not do
+- [Command line](#command-line) — serve, token, channel, backup, healthcheck
+- [Configuration](#configuration) — config.json, and the two variables
+- [Backups](#backups) — what it sends, where, and encrypt it
+- [Notifying from GitHub Actions](#notifying-from-github-actions) — the composite action in this repository
 - [How it works](#how-it-works)
 - [What it deliberately does not do](#what-it-deliberately-does-not-do)
 - [Development](#development)
@@ -325,6 +326,37 @@ notifio sends the archive and a name and nothing else — the token, the remote 
 in the sidecar, so a compromised notifio cannot reach an existing backup. Restoring is `tar xzf`
 into the volume; see [docs/deploy.md](docs/deploy.md#backups).
 
+## Notifying from GitHub Actions
+
+`ghactions/notify` is a composite action in this repository, and notifio's own CI uses it to
+report its builds. Two secrets, and nothing that says where the message lands:
+
+```yaml
+- uses: reeywhaar/notifio/ghactions/notify@main
+  with:
+    host: ${{ secrets.NOTIFIO_HOST }}
+    token: ${{ secrets.NOTIFIO_TOKEN }}
+    body: "🔔 **${{ github.repository }}** deployed"
+```
+
+It prints nothing on success and the failure in full, so a green step stays quiet. The
+provider's message id is available as `outputs.id` rather than printed.
+
+Hand it a [nonced secret](docs/nonced.md) and it signs rather than sending — same workflow, the
+secret never leaves the runner.
+
+Note that **the body appears in the log either way**: GitHub echoes a step's `with:` inputs
+before running it. Secrets are masked as `***`, so anything that must not be in a public build
+log belongs in one.
+
+The token names the channel and the channel pins its destination, so moving those
+notifications is a config edit on the notifio instance rather than a change in every repository
+that sends them.
+
+Pass `subject:` when the token points at an email channel, which requires one, and leave it out
+for a Telegram channel, which has no such field and refuses it. notifio's own CI notifies
+through a Telegram channel with a pinned `to`, so it sends a body and nothing else.
+
 ## How it works
 
 One binary. A request arrives, the bearer token is looked up in `data.json`, and that token
@@ -376,34 +408,3 @@ IMAGE=notifio:test .github/smoke.sh
 
 Conventions — commits, comments, naming, Go rules — are in
 [docs/conventions.md](docs/conventions.md).
-
-## Notifying from GitHub Actions
-
-`ghactions/notify` is a composite action in this repository, and notifio's own CI uses it to
-report its builds. Two secrets, and nothing that says where the message lands:
-
-```yaml
-- uses: reeywhaar/notifio/ghactions/notify@main
-  with:
-    host: ${{ secrets.NOTIFIO_HOST }}
-    token: ${{ secrets.NOTIFIO_TOKEN }}
-    body: "🔔 **${{ github.repository }}** deployed"
-```
-
-It prints nothing on success and the failure in full, so a green step stays quiet. The
-provider's message id is available as `outputs.id` rather than printed.
-
-Hand it a [nonced secret](docs/nonced.md) and it signs rather than sending — same workflow, the
-secret never leaves the runner.
-
-Note that **the body appears in the log either way**: GitHub echoes a step's `with:` inputs
-before running it. Secrets are masked as `***`, so anything that must not be in a public build
-log belongs in one.
-
-The token names the channel and the channel pins its destination, so moving those
-notifications is a config edit on the notifio instance rather than a change in every repository
-that sends them.
-
-Pass `subject:` when the token points at an email channel, which requires one, and leave it out
-for a Telegram channel, which has no such field and refuses it. notifio's own CI notifies
-through a Telegram channel with a pinned `to`, so it sends a body and nothing else.
