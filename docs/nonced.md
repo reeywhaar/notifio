@@ -8,9 +8,15 @@ time and sends **that**; the secret stays where it is. Anything that captures th
 gets something that stops working in five minutes.
 
 ```
-Authorization: Bearer ntc_1789311374.470c327c.03ed800cea02300d0feaf2199925b569ec80dde7be81c4534e1bebd587adcd7c
-                      └──┬─┘ └───┬────┘ └───┬──┘ └──────────────────────────┬─────────────────────────────────┘
-                      prefix   nonce    token id                    sha256 of the base
+Authorization: Bearer <value>
+
+ntc_1789311374.470c327c.03ed800cea02300d0feaf2199925b569ec80dde7be81c4534e1bebd587adcd7c
+└┬─┘└────┬───┘ └───┬──┘ └───────────────────────────────┬──────────────────────────────┘
+ │       │         │                                    │
+ │       │         │                                    sha256 of "<nonce>.<id>.<secret>"
+ │       │         token id — sha256(secret)[:8]
+ │       nonce — unix seconds
+ prefix
 ```
 
 ## The three prefixes
