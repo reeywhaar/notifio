@@ -379,6 +379,17 @@ for secret in "$NSECRET"; do
 done
 printf '   ok   sent by hash, secret refused as bearer, stale nonce refused\n'
 
+# The same action, handed a nonced secret: it signs rather than sending it, so migrating is
+# swapping the secret with no workflow change.
+NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN="$NSECRET" \
+	NOTIFIO_SUBJECT="published, nonced" NOTIFIO_BODY="🔔 **notifio** published" \
+	ghactions/notify/notify.sh >/dev/null \
+	|| die "the action could not send with a nonced secret"
+docker logs notifio 2>&1 | grep -q '"token":"nonced","auth":"nonced"' \
+	|| die "the action did not authenticate as nonced"
+docker logs notifio 2>&1 | grep -qF "$NSECRET" && die "the action put the nonced secret on the wire"
+printf '   ok   the same action signs a nonced secret and sends a bearer one\n'
+
 step "a credential minted by a second process reaches the log"
 # docker exec is a different process, so this line is the only trace the server has.
 docker exec notifio notifio token add audited notices >/dev/null

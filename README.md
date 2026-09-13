@@ -136,6 +136,9 @@ WIRE="ntc_$TS.$ID.$(printf '%s.%s.%s' "$TS" "$ID" "$SECRET" | sha256sum | cut -d
 curl -X POST … -H "Authorization: Bearer $WIRE" --data-urlencode 'body=…'
 ```
 
+[docs/nonced.md](docs/nonced.md#making-one) has that as a reusable bash function and as a
+TypeScript one, both of which take either kind of secret and branch on its prefix.
+
 It costs something real — notifio has to keep that secret in `data.json` in the clear, where a
 bearer token is only ever a hash. [docs/nonced.md](docs/nonced.md) has the trade in full.
 
@@ -389,6 +392,9 @@ report its builds. Two secrets, and nothing that says where the message lands:
 
 It prints nothing on success and the failure in full, so a green step stays quiet. The
 provider's message id is available as `outputs.id` rather than printed.
+
+Hand it a [nonced secret](docs/nonced.md) and it signs rather than sending — same workflow, the
+secret never leaves the runner.
 
 Note that **the body appears in the log either way**: GitHub echoes a step's `with:` inputs
 before running it. Secrets are masked as `***`, so anything that must not be in a public build

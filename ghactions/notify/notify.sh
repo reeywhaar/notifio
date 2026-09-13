@@ -12,6 +12,27 @@ set -eu
 : "${NOTIFIO_TOKEN:?NOTIFIO_TOKEN is required}"
 : "${NOTIFIO_BODY:?NOTIFIO_BODY is required}"
 
+# A nonced secret never goes on the wire: what travels is a hash of it with the current time,
+# good for five minutes. Which kind this is, is legible from its own prefix, so the same
+# workflow works either way and migrating is swapping the secret.
+case "$NOTIFIO_TOKEN" in
+nts_*)
+	command -v sha256sum >/dev/null || {
+		echo "a nonced token needs sha256sum, which is not on PATH" >&2
+		exit 1
+	}
+	# The id is the first eight characters of sha256(secret), so the caller derives it rather
+	# than being given a second value to configure.
+	id=$(printf %s "$NOTIFIO_TOKEN" | sha256sum | cut -c1-8)
+	ts=$(date +%s)
+	mac=$(printf '%s.%s.%s' "$ts" "$id" "$NOTIFIO_TOKEN" | sha256sum | cut -d' ' -f1)
+	auth="ntc_$ts.$id.$mac"
+	;;
+*)
+	auth="$NOTIFIO_TOKEN"
+	;;
+esac
+
 # Every field goes through --data-urlencode: -d would send a % or a & in the message raw, which
 # is either an invalid escape or a second field.
 set -- --data-urlencode "body=$NOTIFIO_BODY" \
@@ -33,7 +54,7 @@ trap 'rm -f "$out"' EXIT
 
 status=$(curl -sS -o "$out" -w '%{http_code}' -X POST \
 	"${NOTIFIO_HOST%/}/api/send" \
-	-H "Authorization: Bearer $NOTIFIO_TOKEN" \
+	-H "Authorization: Bearer $auth" \
 	"$@")
 
 if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then

@@ -12,7 +12,10 @@ inputs:
     description: Base URL of the notifio instance, e.g. https://notify.example.com
     required: true
   token:
-    description: A notifio token. The channel it was issued for decides where this lands
+    description: >-
+      A notifio token. The channel it was issued for decides where this lands. A nonced
+      secret (nts_…) is hashed with a timestamp rather than sent, so nothing reusable
+      reaches the wire; a bearer token (nt_…) is sent as-is. Either works.
     required: true
   body:
     description: The message
