@@ -178,6 +178,32 @@ interval rather than whenever the next send happens to arrive.
 **Nothing logs a `channel test`.** That command is a separate process and its output goes to
 whoever ran it; the server has no way to know a message left through it.
 
+### `client`, behind a proxy
+
+Behind caddy the peer address is caddy's — `172.19.0.3` and friends — which is no use in a log.
+notifio reads `X-Forwarded-For`, then `X-Real-IP`, to get the caller's own.
+
+**Those headers are believed only when the machine that handed us the request is itself on the
+loopback or a private network.** That is where a reverse proxy in a compose file sits, and it is
+not where the internet is. Run notifio with a port published straight to a public address and
+the headers are ignored entirely, so nobody can write their own address into your log.
+
+**Of `X-Forwarded-For`, the rightmost entry wins.** That is the address the nearest proxy
+actually observed; everything to its left was supplied by the caller and may be invented. Taking
+the leftmost is the usual mistake, and it is the spoofable one — a caller who sends
+`X-Forwarded-For: 1.2.3.4` ends up with `1.2.3.4, <their real address>` once caddy appends what
+it saw, and notifio logs the second.
+
+Two consequences worth knowing:
+
+- **If your proxy sits on a public address**, forwarded headers are ignored and every line shows
+  the proxy. Put it on the same private network as notifio, which is the ordinary arrangement.
+- **If your proxy does not set either header**, every line shows the proxy's private address,
+  which is true and useless. caddy and traefik set them by default; nginx wants
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`.
+
+There is no list of trusted proxies to configure. Three variables do not need a fourth.
+
 What is deliberately **not** in it, enforced by the code and asserted by a test:
 
 - **Never the body.** Not truncated, not at `debug`. A notification body is the message itself —

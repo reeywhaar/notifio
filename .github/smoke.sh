@@ -336,6 +336,17 @@ assert m, "a subjectless email did not get the default"
 print("   ok   telegram takes a title, email defaults the subject")
 '
 
+step "a forwarded address reaches the log, and a spoofed one does not"
+# The container is reached over the docker bridge, which is private, so the header is believed.
+want 200 -X POST "$B" -H "Authorization: Bearer $FIXED" \
+	-H 'X-Forwarded-For: 1.2.3.4, 198.51.100.7' \
+	--data-urlencode 'subject=forwarded' --data-urlencode 'body=x'
+docker logs notifio 2>&1 | grep -q '"client":"198.51.100.7"' \
+	|| die "the forwarded address is not in the log"
+docker logs notifio 2>&1 | grep -q '"client":"1.2.3.4"' \
+	&& die "the caller's invented address was believed"
+printf '   ok   the rightmost entry wins and the prefix is ignored\n'
+
 step "a credential minted by a second process reaches the log"
 # docker exec is a different process, so this line is the only trace the server has.
 docker exec notifio notifio token add audited notices >/dev/null

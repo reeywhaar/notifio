@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -277,7 +278,46 @@ func redactTo(typ string, to []string) string {
 	return "…"
 }
 
+// clientIP is who made the request, seen through whatever is in front of notifio.
+//
+// A forwarded header is believed only when the machine that handed us the request is itself on
+// the loopback or a private network — that is where a reverse proxy in a compose file sits, and
+// it is not where the internet is. Exposed directly, the headers are ignored and the peer's own
+// address is used, so nobody can write their own address into somebody's log.
 func clientIP(r *http.Request) string {
+	peer := peerIP(r)
+	addr, err := netip.ParseAddr(peer)
+	if err != nil || !trusted(addr) {
+		return peer
+	}
+
+	// The rightmost entry is the address the nearest proxy actually observed. Anything to the
+	// left of it was supplied by the caller and may be invented; taking the leftmost is the
+	// usual mistake, and it is the spoofable one.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if a, err := netip.ParseAddr(strings.TrimSpace(parts[i])); err == nil {
+				return a.String()
+			}
+		}
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+		if a, err := netip.ParseAddr(xr); err == nil {
+			return a.String()
+		}
+	}
+	return peer
+}
+
+// trusted reports whether an address is somewhere a reverse proxy lives rather than somewhere
+// the internet does.
+func trusted(a netip.Addr) bool {
+	a = a.Unmap()
+	return a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsUnspecified()
+}
+
+func peerIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

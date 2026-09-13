@@ -505,3 +505,71 @@ func TestAChannelChangeIsLogged(t *testing.T) {
 		t.Errorf("logged %d times, want 1", n)
 	}
 }
+
+// Behind a reverse proxy the peer address is the proxy's, which is no use in a log. The header
+// that carries the real one is also the header anybody can write, so it is believed only from
+// somewhere a proxy could be.
+func TestClientIP(t *testing.T) {
+	cases := []struct {
+		name, peer, xff, real, want string
+	}{
+		{"no proxy, no headers", "203.0.113.9:5000", "", "", "203.0.113.9"},
+		{"proxy on a docker network", "172.19.0.3:5000", "203.0.113.9", "", "203.0.113.9"},
+		{"proxy on loopback", "127.0.0.1:5000", "203.0.113.9", "", "203.0.113.9"},
+		{"an internal caller is still real", "172.19.0.3:5000", "172.19.0.5", "", "172.19.0.5"},
+
+		// The caller prepends its own invention; the proxy appends what it saw. The rightmost
+		// entry is the one the proxy observed, so the lie is ignored.
+		{"spoofed prefix is ignored", "172.19.0.3:5000", "1.2.3.4, 203.0.113.9", "", "203.0.113.9"},
+		{"a whole spoofed chain is ignored", "10.0.0.2:5000", "1.2.3.4, 5.6.7.8, 203.0.113.9", "", "203.0.113.9"},
+
+		// Exposed with no proxy in front, the header is somebody talking about themselves.
+		{"public peer, header ignored", "203.0.113.9:5000", "1.2.3.4", "", "203.0.113.9"},
+		{"public peer, real-ip ignored", "203.0.113.9:5000", "", "1.2.3.4", "203.0.113.9"},
+
+		{"x-real-ip when there is no xff", "172.19.0.3:5000", "", "203.0.113.9", "203.0.113.9"},
+		{"xff wins over real-ip", "172.19.0.3:5000", "203.0.113.9", "198.51.100.1", "203.0.113.9"},
+
+		{"garbage falls back to the peer", "172.19.0.3:5000", "not-an-ip", "", "172.19.0.3"},
+		{"empty header falls back to the peer", "172.19.0.3:5000", "", "", "172.19.0.3"},
+		{"ipv6 proxy", "[::1]:5000", "2001:db8::1", "", "2001:db8::1"},
+		{"ipv6 caller", "172.19.0.3:5000", "2001:db8::1", "", "2001:db8::1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/send", nil)
+			r.RemoteAddr = c.peer
+			if c.xff != "" {
+				r.Header.Set("X-Forwarded-For", c.xff)
+			}
+			if c.real != "" {
+				r.Header.Set("X-Real-IP", c.real)
+			}
+			if got := clientIP(r); got != c.want {
+				t.Errorf("clientIP = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// The log is the only place this shows up, so assert it end to end.
+func TestTheForwardedAddressReachesTheLog(t *testing.T) {
+	h := newHarness(t)
+	tok := h.mint(t, "grafana", "alerts")
+
+	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/api/send",
+		strings.NewReader(url.Values{"body": {"x"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+	res, err := h.srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+
+	// httptest serves on loopback, which is exactly the case a proxy sits in.
+	if !strings.Contains(h.logs.String(), `"client":"198.51.100.7"`) {
+		t.Errorf("the forwarded address is not in the log:\n%s", h.logs.String())
+	}
+}
