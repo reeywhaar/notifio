@@ -86,6 +86,15 @@ true, and the two that fall behind are the ones somebody will read.
 - **Test across the seam when two halves have to agree.** `TestAFilenameSurvivesParsingAndEncoding`
   exists because the parser and the MIME encoder each passed their own tests while the parser
   was destroying exactly the filenames the encoder existed to carry.
+- **Assert on the thing under test, not on something correlated with it.**
+  `TestAuthIsCheckedBeforeTheBodyIsRead` first counted the bytes the *client* wrote, which on
+  loopback says more about kernel socket buffers than about the handler: it passed on a laptop
+  and failed on a runner with larger buffers. It now sends a body that stops yielding, so a
+  handler which reads before authenticating never gets an answer.
+- **A test that could hang has to fail instead.** The reader above gives up after three seconds
+  and returns an error, because a reader that blocks forever cannot be preempted by the request
+  context — the transport's write loop is sitting inside `Read` — and the whole package would
+  time out instead of one test failing with a reason.
 
 ## Time
 

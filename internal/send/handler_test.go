@@ -2,7 +2,9 @@ package send
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,26 +150,55 @@ func TestAuth(t *testing.T) {
 }
 
 // The unauthenticated-upload hole: a stranger must not be able to make notifio read a body.
+//
+// Counting what the client wrote does not test this — on loopback the kernel buffers a megabyte
+// before the server has done anything, so the count says more about socket sizes than about the
+// handler, and it passed locally while failing on a runner with larger buffers.
+//
+// Instead the body yields one byte and then never another. A handler that reads before checking
+// the token waits here forever; one that checks the header first answers at once. The context
+// bounds it so that failure is a failure rather than a hang.
 func TestAuthIsCheckedBeforeTheBodyIsRead(t *testing.T) {
 	h := newHarness(t)
 
-	counted := &countingReader{r: strings.NewReader(strings.Repeat("x", 1<<20))}
-	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/api/send", counted)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.ContentLength = 1 << 20
-	res, err := h.srv.Client().Do(req)
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.srv.URL+"/api/send",
+		io.MultiReader(strings.NewReader("b"), blockingReader{blocked}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Declared far larger than what will ever arrive, so the server has every reason to wait.
+	req.ContentLength = 1 << 20
+
+	res, err := h.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("no answer while the body was still open: %v", err)
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", res.StatusCode)
 	}
-	// The client may have pushed some bytes onto the wire before the server answered; what
-	// matters is that the server did not ask for the whole megabyte.
-	if n := counted.n.Load(); n == 1<<20 {
-		t.Errorf("the whole body was read from an unauthenticated request (%d bytes)", n)
+}
+
+// blockingReader yields nothing until it is released, and gives up on its own after a while.
+//
+// The giving up is the important half. A reader that blocks forever cannot be preempted by the
+// request context — the transport's write loop is sitting inside Read — so a handler that waits
+// for the body would hang the whole package instead of failing this one test.
+type blockingReader struct{ until chan struct{} }
+
+func (b blockingReader) Read([]byte) (int, error) {
+	select {
+	case <-b.until:
+		return 0, io.EOF
+	case <-time.After(3 * time.Second):
+		return 0, errors.New("the handler waited for a body it should not have read")
 	}
 }
 
@@ -361,18 +391,6 @@ func touch(t *testing.T, path string) {
 	if err := os.Chtimes(path, future, future); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// countingReader records how much of a body the server actually asked for.
-type countingReader struct {
-	r io.Reader
-	n atomic.Int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n.Add(int64(n))
-	return n, err
 }
 
 // Breaking config.json must not be silent, and must not look like an empty instance.
