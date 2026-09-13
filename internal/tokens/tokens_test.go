@@ -370,3 +370,74 @@ func TestTheFileStillHoldsOnlyAHash(t *testing.T) {
 		t.Errorf("version = %d; nothing about the format changed", f.Version)
 	}
 }
+
+// The minting loop re-mints on an id collision. Eight hex characters is 32 bits, so a real one
+// is far too unlikely to reach by minting tokens — which means the branch would never run in a
+// test, and untested code that exists for a rare case is exactly the code that rots.
+func TestCreateRetriesOnAnIDCollision(t *testing.T) {
+	s, _ := open(t)
+
+	real := randRead
+	calls := 0
+	randRead = func(b []byte) (int, error) {
+		calls++
+		if calls <= 2 {
+			// The same bytes twice: the second mint collides with the first.
+			for i := range b {
+				b[i] = 7
+			}
+			return len(b), nil
+		}
+		return real(b)
+	}
+	t.Cleanup(func() { randRead = real })
+
+	if _, err := s.Create("first", "alerts"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create("second", "alerts"); err != nil {
+		t.Fatalf("a collision was fatal rather than retried: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("rand was read %d times, want 3: one each plus one retry", calls)
+	}
+
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list[0].ID() == list[1].ID() {
+		t.Errorf("both tokens have id %s", list[0].ID())
+	}
+}
+
+// And it gives up rather than looping forever if every attempt collides.
+func TestCreateGivesUpOnEndlessCollisions(t *testing.T) {
+	s, _ := open(t)
+
+	real := randRead
+	randRead = func(b []byte) (int, error) {
+		for i := range b {
+			b[i] = 9
+		}
+		return len(b), nil
+	}
+	t.Cleanup(func() { randRead = real })
+
+	if _, err := s.Create("first", "alerts"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Create("second", "alerts")
+	if err == nil {
+		t.Fatal("a token was minted with an id already in use")
+	}
+	if !strings.Contains(err.Error(), "unused id") {
+		t.Errorf("err = %v", err)
+	}
+
+	// The failed mint left nothing behind.
+	list, _ := s.List()
+	if len(list) != 1 {
+		t.Errorf("%d tokens in the file, want 1", len(list))
+	}
+}

@@ -23,6 +23,10 @@ import (
 	"time"
 )
 
+// randRead is crypto/rand, as a var so a test can force the id collision the minting loop
+// exists for. Nothing else reassigns it.
+var randRead = rand.Read
+
 // Errors a caller needs to tell apart from a broken disk.
 var (
 	ErrNotFound = errors.New("no such token")
@@ -211,7 +215,7 @@ func (s *Store) Create(label, channel string) (string, error) {
 	var secret, hash string
 	for attempt := 0; ; attempt++ {
 		raw := make([]byte, secretBytes)
-		if _, err := rand.Read(raw); err != nil {
+		if _, err := randRead(raw); err != nil {
 			return "", err
 		}
 		secret = Prefix + base64.RawURLEncoding.EncodeToString(raw)

@@ -84,6 +84,13 @@ question `t_01JQ…` does not.
 
 `nt_` followed by 32 random bytes in base64url — 43 characters, 256 bits.
 
+**The id is unique by construction.** `token add` mints in a loop and re-rolls if the first
+eight characters of the hash are already taken, so a collision is impossible rather than merely
+unlikely; after ten attempts it refuses rather than looping forever. At 32 bits a genuine
+collision is far too rare to reach by minting tokens, which is why the retry is tested by
+forcing one — `randRead` is a package var so a test can hand it the same bytes twice — rather
+than by hoping for one.
+
 Stored as **SHA-256, hex**, compared with `subtle.ConstantTimeCompare` against every stored hash
 with no early exit on a match.
 
