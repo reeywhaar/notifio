@@ -50,8 +50,16 @@ func tokenAddCmd() *cobra.Command {
 			}
 			// The secret alone on stdout, so $(…) captures exactly it.
 			cmd.Println(secret)
-			fmt.Fprintf(os.Stderr, "%s: minted %q for channel %q. It is not stored and cannot be shown again.\n",
-				"notifio", label, channel)
+			// The id goes to stderr with everything else, so $(…) still captures only the token.
+			list, _ := e.Tokens.List()
+			id := ""
+			for _, t := range list {
+				if t.Label == label {
+					id = t.ID()
+				}
+			}
+			fmt.Fprintf(os.Stderr, "notifio: minted %q (id %s) for channel %q. It is not stored and cannot be shown again.\n",
+				label, id, channel)
 			return nil
 		},
 	}
@@ -78,6 +86,7 @@ func tokenListCmd() *cobra.Command {
 			}
 
 			type row struct {
+				ID       string `json:"id"`
 				Label    string `json:"label"`
 				Channel  string `json:"channel"`
 				Type     string `json:"type"`
@@ -86,7 +95,8 @@ func tokenListCmd() *cobra.Command {
 			}
 			rows := make([]row, 0, len(list))
 			for _, t := range list {
-				r := row{Label: t.Label, Channel: t.Channel, Created: t.Created().Format("2006-01-02 15:04:05Z")}
+				r := row{ID: t.ID(), Label: t.Label, Channel: t.Channel,
+					Created: t.Created().Format("2006-01-02 15:04:05Z")}
 				if ch, ok := cfg.Channels[t.Channel]; ok {
 					r.Type = ch.Type
 				} else {
@@ -105,13 +115,13 @@ func tokenListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "LABEL\tCHANNEL\tTYPE\tCREATED")
+			fmt.Fprintln(w, "ID\tLABEL\tCHANNEL\tTYPE\tCREATED")
 			for _, r := range rows {
 				name := r.Channel
 				if r.Orphaned {
 					name += " (missing)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Label, name, r.Type, r.Created)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Label, name, r.Type, r.Created)
 			}
 			return w.Flush()
 		},

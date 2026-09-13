@@ -2,6 +2,7 @@ package tokens
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,5 +161,91 @@ func TestValidLabel(t *testing.T) {
 	}
 	if err := ValidLabel("grafana-tg_1"); err != nil {
 		t.Errorf("rejected a fine label: %v", err)
+	}
+}
+
+// The id names a token without naming its secret or its label, and every file that already
+// exists has one because it is derived from the hash rather than stored.
+func TestID(t *testing.T) {
+	s, _ := open(t)
+	if _, err := s.Create("grafana", "alerts"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := list[0]
+
+	if len(tok.ID()) != IDLen {
+		t.Errorf("id = %q, want %d characters", tok.ID(), IDLen)
+	}
+	if tok.ID() != tok.Hash[:IDLen] {
+		t.Errorf("id %q is not the head of the hash %q", tok.ID(), tok.Hash)
+	}
+	// Fixed width and delimiter-free, which is what makes it usable inside a wire format.
+	for _, r := range tok.ID() {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			t.Errorf("id %q carries %q, which is not hex", tok.ID(), string(r))
+		}
+	}
+
+	got, ok, err := s.ByID(tok.ID())
+	if err != nil || !ok {
+		t.Fatalf("ByID = %v, %v", ok, err)
+	}
+	if got.Label != "grafana" {
+		t.Errorf("ByID returned %+v", got)
+	}
+	if _, ok, _ := s.ByID("deadbeef"); ok {
+		t.Error("an unknown id resolved")
+	}
+	if _, ok, _ := s.ByID(""); ok {
+		t.Error("an empty id resolved")
+	}
+}
+
+// A row from a file written before ids existed still has one.
+func TestIDNeedsNoMigration(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"version":1,"tokens":[{"label":"old","channel":"alerts",` +
+		`"hash":"2c6da8e2234b6e28e7657e65941fcd7888a7baa6db6575c42abbcefde9899c0c","created_at":1}]}`
+	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := list[0].ID(); got != "2c6da8e2" {
+		t.Errorf("id = %q, want 2c6da8e2", got)
+	}
+}
+
+// Every token in a file has a distinct id, because Create re-mints on a clash.
+func TestIDsAreDistinct(t *testing.T) {
+	s, _ := open(t)
+	seen := map[string]bool{}
+	for i := range 50 {
+		if _, err := s.Create(fmt.Sprintf("t%d", i), "alerts"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range list {
+		if seen[tok.ID()] {
+			t.Fatalf("id %q appears twice", tok.ID())
+		}
+		seen[tok.ID()] = true
+	}
+	if len(seen) != 50 {
+		t.Errorf("%d distinct ids for 50 tokens", len(seen))
 	}
 }

@@ -44,6 +44,11 @@ const (
 	fileVersion = 1
 
 	labelMax = 64
+
+	// IDLen is how much of the hash names a token. Eight hex characters is 32 bits, which is
+	// short enough to type and long enough that [Store.Create] re-minting on a clash makes a
+	// collision impossible rather than merely unlikely.
+	IDLen = 8
 )
 
 // Token is one entry: what it is called, where it may send, and enough to recognise it.
@@ -56,6 +61,19 @@ type Token struct {
 
 // Created is CreatedAt as a time, in UTC like everything else here.
 func (t Token) Created() time.Time { return time.Unix(t.CreatedAt, 0).UTC() }
+
+// ID names this token without naming its secret or its label.
+//
+// Derived from the hash rather than stored, so every file that already exists has one and
+// nothing can drift out of step with anything else. It is not a second name for the token —
+// the label is that, and the label is what the log carries. This is for the places a stable,
+// fixed-width, delimiter-free identifier is needed.
+func (t Token) ID() string {
+	if len(t.Hash) < IDLen {
+		return t.Hash
+	}
+	return t.Hash[:IDLen]
+}
 
 type file struct {
 	Version int     `json:"version"`
@@ -171,16 +189,29 @@ func (s *Store) Create(label, channel string) (string, error) {
 		return "", fmt.Errorf("%q: %w", label, ErrConflict)
 	}
 
-	raw := make([]byte, secretBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
+	// Minted in a loop so an id collision cannot happen rather than being unlikely. Two
+	// attempts is already beyond astronomical; ten is free.
+	var secret, hash string
+	for attempt := 0; ; attempt++ {
+		raw := make([]byte, secretBytes)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		secret = Prefix + base64.RawURLEncoding.EncodeToString(raw)
+		hash = hashOf(secret)
+		id := Token{Hash: hash}.ID()
+		if !slices.ContainsFunc(s.tokens, func(t Token) bool { return t.ID() == id }) {
+			break
+		}
+		if attempt > 10 {
+			return "", errors.New("could not mint a token with an unused id")
+		}
 	}
-	secret := Prefix + base64.RawURLEncoding.EncodeToString(raw)
 
 	s.tokens = append(s.tokens, Token{
 		Label:     label,
 		Channel:   channel,
-		Hash:      hashOf(secret),
+		Hash:      hash,
 		CreatedAt: time.Now().UTC().Unix(),
 	})
 	if err := s.writeLocked(); err != nil {
@@ -202,6 +233,20 @@ func (s *Store) Remove(label string) error {
 	}
 	s.tokens = slices.Delete(s.tokens, i, i+1)
 	return s.writeLocked()
+}
+
+// ByID returns the token an id names.
+func (s *Store) ByID(id string) (Token, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(false); err != nil {
+		return Token{}, false, err
+	}
+	i := slices.IndexFunc(s.tokens, func(t Token) bool { return t.ID() == id })
+	if i < 0 {
+		return Token{}, false, nil
+	}
+	return s.tokens[i], true, nil
 }
 
 // Verify returns the token a secret belongs to.
