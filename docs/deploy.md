@@ -151,6 +151,33 @@ worst combination of properties a command can have.
  "status":200,"dur_ms":312,"id":"4821","client":"10.0.0.7"}
 ```
 
+Everything it writes, and when:
+
+| level | `msg` | when |
+| --- | --- | --- |
+| INFO | `listening` | startup, with the channels it loaded |
+| WARN | `no tokens exist` | startup, when nothing can send yet |
+| DEBUG | `sending` | a send began — so one that never comes back is visible as something that started |
+| INFO | `sent` | a send succeeded |
+| WARN | `refused` | the request was rejected: `400`, `413`, `415`, `422` |
+| WARN | `rejected` | an unknown token, with the client address and no token material |
+| ERROR | `send failed` | the provider refused it or could not be reached |
+| INFO | `tokens changed` | `data.json` changed under the process — see below |
+| INFO | `channels changed` | a channel was added to or removed from `config.json` |
+| ERROR | `config will not load` | once when it breaks, and `config loaded again` once when it recovers |
+| ERROR | `orphaned token` | a token whose channel is no longer configured |
+| INFO | `backing up` / `backed up` | the backup loop, when a URL is set |
+| ERROR | `backup failed` | a push the agent refused |
+
+**`tokens changed` is the one audit line.** `docker exec notifio notifio token add` is a second
+process, so the server's log is the only place a minted or withdrawn credential can be noticed
+at all. It carries the count and each `label@channel`, never a secret. The store notices the
+file when something reads it, and `/healthz` does — so a change appears within a healthcheck
+interval rather than whenever the next send happens to arrive.
+
+**Nothing logs a `channel test`.** That command is a separate process and its output goes to
+whoever ran it; the server has no way to know a message left through it.
+
 What is deliberately **not** in it, enforced by the code and asserted by a test:
 
 - **Never the body.** Not truncated, not at `debug`. A notification body is the message itself —

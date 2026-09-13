@@ -212,7 +212,7 @@ script to stop retrying when the right answer is to wake somebody.
 
 ## `/healthz`
 
-`GET /healthz` → `200 {"ok":true,"version":"…","channels":3}`, unauthenticated. A
+`GET /healthz` → `200 {"ok":true,"version":"…","channels":3,"tokens":2}`, unauthenticated. A
 `"config":"stale"` alongside those means `config.json` will not parse and the channels being
 reported are the last ones that did — see [channels.md](channels.md#the-file).
 

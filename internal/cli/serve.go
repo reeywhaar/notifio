@@ -31,6 +31,9 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 			log := logger(e.Env)
+			// Only here, not in setup(): logger writes to stdout, and a stray line there would
+			// corrupt `notifio token list --json`.
+			e.Tokens.Log = log
 
 			cfg, err := e.Config.Get()
 			if err != nil {

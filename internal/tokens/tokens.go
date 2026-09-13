@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,11 @@ type file struct {
 // Store is the token file, and a copy of it held in memory.
 type Store struct {
 	path string
+
+	// Log, when set, records a file that changed under this process. `docker exec notifio
+	// notifio token add` is a second process, so this is the only trace the server has that
+	// somebody minted or withdrew a credential.
+	Log *slog.Logger
 
 	mu      sync.Mutex
 	tokens  []Token
@@ -120,6 +126,13 @@ func (s *Store) reloadLocked(force bool) error {
 		if t.Channel == "" {
 			return fmt.Errorf("%s: token %q has no channel", s.path, t.Label)
 		}
+	}
+	if s.Log != nil && !force {
+		labels := make([]string, 0, len(f.Tokens))
+		for _, t := range f.Tokens {
+			labels = append(labels, t.Label+"@"+t.Channel)
+		}
+		s.Log.Info("tokens changed", "count", len(f.Tokens), "tokens", labels)
 	}
 	s.tokens, s.modTime, s.size = f.Tokens, info.ModTime(), info.Size()
 	return nil

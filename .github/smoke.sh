@@ -105,6 +105,7 @@ wait_for sink 'docker logs sink 2>&1 | grep -q . || docker run --rm --network "$
 step "healthz reports the channels it loaded"
 curl -fsS "http://127.0.0.1:$PORT/healthz" | grep -q '"ok":true' || die "healthz is not ok"
 curl -fsS "http://127.0.0.1:$PORT/healthz" | grep -q '"channels":4' || die "wrong channel count"
+curl -fsS "http://127.0.0.1:$PORT/healthz" | grep -q '"tokens":0' || die "healthz does not report the token count"
 printf '   ok   %s\n' "$(curl -fsS "http://127.0.0.1:$PORT/healthz")"
 
 step "an instance with no tokens says so rather than refusing in silence"
@@ -334,6 +335,18 @@ m = [x for x in json.load(sys.stdin) if x["subject"] == "No subject"]
 assert m, "a subjectless email did not get the default"
 print("   ok   telegram takes a title, email defaults the subject")
 '
+
+step "a credential minted by a second process reaches the log"
+# docker exec is a different process, so this line is the only trace the server has.
+docker exec notifio notifio token add audited notices >/dev/null
+curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null
+docker logs notifio 2>&1 | grep -q '"msg":"tokens changed"' || die "a minted token was not logged"
+docker logs notifio 2>&1 | grep -q 'audited@notices' || die "the line does not name the token and channel"
+docker exec notifio notifio token remove audited >/dev/null
+curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null
+n=$(docker logs notifio 2>&1 | grep -c '"msg":"tokens changed"' || true)
+[ "$n" -ge 2 ] || die "the withdrawal was not logged ($n lines)"
+printf '   ok   mint and withdrawal both recorded, with no secret\n'
 
 step "the backup carries an archive and a name, and no authority"
 docker exec notifio notifio backup now

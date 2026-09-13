@@ -33,8 +33,10 @@ type Handler struct {
 	Log    *slog.Logger
 	Client *http.Client
 
-	mu         sync.Mutex
-	lastCfgErr string
+	mu          sync.Mutex
+	lastCfgErr  string
+	lastChans   string
+	seenChannel bool
 }
 
 // config is the config in use, and the one place a load failure is reported.
@@ -59,6 +61,17 @@ func (h *Handler) config() (*config.Config, bool) {
 	case changed && msg == "":
 		h.Log.Info("config loaded again", "channels", cfg.Names())
 	}
+
+	// A channel added or removed is the other thing an operator does by editing that file, and
+	// it left no trace at all before. Logged on the edge, since this runs on every request.
+	names := strings.Join(cfg.Names(), ",")
+	h.mu.Lock()
+	moved := h.seenChannel && names != h.lastChans
+	h.lastChans, h.seenChannel = names, true
+	h.mu.Unlock()
+	if moved {
+		h.Log.Info("channels changed", "channels", cfg.Names())
+	}
 	return cfg, err == nil
 }
 
@@ -80,7 +93,16 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, ok := h.config()
-	body := map[string]any{"ok": true, "version": app.Version, "channels": len(cfg.Channels)}
+	// Counting the tokens is also what makes the store notice a file a second process changed,
+	// so `docker exec … token add` shows up in the log within a healthcheck interval rather
+	// than whenever the next request happens to arrive.
+	n, err := h.Tokens.Count()
+	if err != nil {
+		h.Log.Error("token file unreadable", "error", err)
+	}
+	body := map[string]any{
+		"ok": true, "version": app.Version, "channels": len(cfg.Channels), "tokens": n,
+	}
 	if !ok {
 		// Still 200, and deliberately: a 503 here would fail the container healthcheck, and
 		// the restart that follows would find the same broken file and refuse to start at
@@ -140,6 +162,13 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, tok, ch, started, err)
 		return
 	}
+
+	// At debug rather than info: one line per send is enough in normal running, and this one
+	// exists so a send that never comes back is visible as something that started.
+	h.Log.Debug("sending",
+		"token", tok.Label, "channel", ch.Name, "type", ch.Type,
+		"to", redactTo(ch.Type, v.To), "body_type", v.Requested, "attachments", len(v.Atts),
+		"bytes", len(v.Body), "timeout", ch.SendTimeout.String())
 
 	res, err := Deliver(r.Context(), v, h.Client)
 	if err != nil {

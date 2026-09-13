@@ -63,10 +63,11 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	logs := &bytes.Buffer{}
-	h := &Handler{
-		Config: cfg, Tokens: st, Client: tg.Client(),
-		Log: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-	}
+	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	// As serve does: the token store reports a file a second process changed, and only the
+	// server wires that up. See internal/cli/serve.go.
+	st.Log = log
+	h := &Handler{Config: cfg, Tokens: st, Client: tg.Client(), Log: log}
 	srv := httptest.NewServer(h.Routes())
 	t.Cleanup(srv.Close)
 	return &harness{h: h, srv: srv, logs: logs, dir: dir, cfgDir: cfgPath, tokens: st, tg: tg}
@@ -438,5 +439,69 @@ func TestABrokenConfigIsLoudAndHarmless(t *testing.T) {
 	h.srv.Client().Get(h.srv.URL + "/healthz")
 	if !strings.Contains(h.logs.String(), "config loaded again") {
 		t.Error("recovery was not reported")
+	}
+}
+
+// `docker exec notifio notifio token add` is a second process, so the server's log is the only
+// place a credential change can be noticed at all.
+func TestACredentialChangeIsLogged(t *testing.T) {
+	h := newHarness(t)
+	beside, err := tokens.Open(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := beside.Create("minted", "alerts"); err != nil {
+		t.Fatal(err)
+	}
+	// healthz is what notices it, so a change shows up within a healthcheck interval rather
+	// than whenever the next send happens to arrive.
+	res, err := h.srv.Client().Get(h.srv.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := body(t, res)
+	if m["tokens"].(float64) != 1 {
+		t.Errorf("healthz reports %v tokens", m["tokens"])
+	}
+
+	if err := beside.Remove("minted"); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.Client().Get(h.srv.URL + "/healthz")
+
+	logged := h.logs.String()
+	if n := strings.Count(logged, `"msg":"tokens changed"`); n != 2 {
+		t.Errorf("a mint and a withdrawal produced %d lines, want 2:\n%s", n, logged)
+	}
+	if !strings.Contains(logged, `"minted@alerts"`) {
+		t.Error("the line does not say which token and which channel")
+	}
+	if !strings.Contains(logged, `"count":0`) {
+		t.Error("the withdrawal was not recorded")
+	}
+}
+
+// A channel added or removed by editing config.json left no trace before.
+func TestAChannelChangeIsLogged(t *testing.T) {
+	h := newHarness(t)
+	h.srv.Client().Get(h.srv.URL + "/healthz")
+
+	body := `{"version":1,"channels":{"alerts":{"type":"telegram","token":"1:x","pinned":{"to":"-1"},"api_base":"` + h.tg.URL + `"}}}`
+	if err := os.WriteFile(h.cfgDir, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, h.cfgDir)
+	h.srv.Client().Get(h.srv.URL + "/healthz")
+
+	if !strings.Contains(h.logs.String(), `"msg":"channels changed"`) {
+		t.Errorf("removing two channels was not logged:\n%s", h.logs.String())
+	}
+	// Not on every request afterwards.
+	for range 3 {
+		h.srv.Client().Get(h.srv.URL + "/healthz")
+	}
+	if n := strings.Count(h.logs.String(), `"msg":"channels changed"`); n != 1 {
+		t.Errorf("logged %d times, want 1", n)
 	}
 }

@@ -85,6 +85,6 @@ func (p *Pusher) Once(ctx context.Context, force bool) (string, error) {
 		return "", err
 	}
 	p.lastDigest = a.Digest
-	p.Log.Info("backed up", "bytes", len(a.Body))
+	p.Log.Info("backed up", "to", p.URL, "bytes", len(a.Body), "name", Name)
 	return Name, nil
 }
