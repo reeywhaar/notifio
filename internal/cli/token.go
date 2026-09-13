@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"notifio/internal/config"
-	"notifio/internal/tokens"
 )
 
 func tokenCmd() *cobra.Command {
@@ -23,15 +22,13 @@ func tokenCmd() *cobra.Command {
 }
 
 func tokenAddCmd() *cobra.Command {
-	var nonced bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "add <label> <channel>",
 		Short: "Mint a token for one channel and print it once",
 		Long: "The secret is printed once and stored hashed. A lost token is removed and\n" +
 			"minted again rather than recovered.\n\n" +
-			"With --nonced the secret never crosses the wire: the caller sends a hash of it\n" +
-			"with a timestamp, valid for five minutes. The cost is that notifio has to keep\n" +
-			"the secret in data.json in the clear. See docs/tokens.md.",
+			"Send it whole as a bearer token, or keep it back and prove it with a nonce —\n" +
+			"see docs/nonced.md. Either works, with no difference at mint time.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			label, channel := args[0], args[1]
@@ -49,11 +46,7 @@ func tokenAddCmd() *cobra.Command {
 				return fmt.Errorf("no channel %q; known channels are %v", channel, cfg.Names())
 			}
 
-			create := e.Tokens.Create
-			if nonced {
-				create = e.Tokens.CreateNonced
-			}
-			secret, err := create(label, channel)
+			secret, err := e.Tokens.Create(label, channel)
 			if err != nil {
 				return err
 			}
@@ -67,24 +60,11 @@ func tokenAddCmd() *cobra.Command {
 					id = t.ID()
 				}
 			}
-			kind := "bearer"
-			if nonced {
-				kind = "nonced"
-			}
-			fmt.Fprintf(os.Stderr, "notifio: minted %s token %q (id %s) for channel %q. It is not shown again.\n",
-				kind, label, id, channel)
-			if nonced {
-				// The id is derivable from the secret, so a caller needs only the secret. Both
-				// are printed because the recipe is easier to read with the real id in it.
-				fmt.Fprintf(os.Stderr, "notifio: the caller needs only the secret; id is sha256(secret)[:8]\n")
-				fmt.Fprintf(os.Stderr, "notifio: send  Authorization: Bearer %s<unix>.%s.<sha256 of \"<unix>.%s.<secret>\">\n",
-					tokens.NoncedPrefix, id, id)
-			}
+			fmt.Fprintf(os.Stderr, "notifio: minted %q (id %s) for channel %q. It is not shown again.\n",
+				label, id, channel)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&nonced, "nonced", false, "the secret never crosses the wire; notifio stores it in the clear")
-	return cmd
 }
 
 func tokenListCmd() *cobra.Command {
@@ -109,7 +89,6 @@ func tokenListCmd() *cobra.Command {
 
 			type row struct {
 				ID       string `json:"id"`
-				Kind     string `json:"kind"`
 				Label    string `json:"label"`
 				Channel  string `json:"channel"`
 				Type     string `json:"type"`
@@ -118,11 +97,8 @@ func tokenListCmd() *cobra.Command {
 			}
 			rows := make([]row, 0, len(list))
 			for _, t := range list {
-				r := row{ID: t.ID(), Kind: "bearer", Label: t.Label, Channel: t.Channel,
+				r := row{ID: t.ID(), Label: t.Label, Channel: t.Channel,
 					Created: t.Created().Format("2006-01-02 15:04:05Z")}
-				if t.Nonced() {
-					r.Kind = "nonced"
-				}
 				if ch, ok := cfg.Channels[t.Channel]; ok {
 					r.Type = ch.Type
 				} else {
@@ -141,13 +117,13 @@ func tokenListCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tKIND\tLABEL\tCHANNEL\tTYPE\tCREATED")
+			fmt.Fprintln(w, "ID\tLABEL\tCHANNEL\tTYPE\tCREATED")
 			for _, r := range rows {
 				name := r.Channel
 				if r.Orphaned {
 					name += " (missing)"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Kind, r.Label, name, r.Type, r.Created)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.Label, name, r.Type, r.Created)
 			}
 			return w.Flush()
 		},

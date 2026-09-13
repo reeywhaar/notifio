@@ -250,7 +250,7 @@ notifio itself**.
 | secret | |
 | --- | --- |
 | `NOTIFIO_HOST` | e.g. `https://notify.example.com` |
-| `NOTIFIO_TOKEN` | a token issued for the channel these land in. A nonced one (`nts_…`) is signed rather than sent — see [nonced.md](nonced.md#from-github-actions) |
+| `NOTIFIO_TOKEN` | a token issued for the channel these land in. The action hashes it rather than sending it — see [nonced.md](nonced.md) |
 
 Nothing in the workflow says where a notification goes — the token names the channel and the
 channel pins its destination, so moving the notifications elsewhere is a config edit on the

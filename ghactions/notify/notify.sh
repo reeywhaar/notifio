@@ -12,26 +12,16 @@ set -eu
 : "${NOTIFIO_TOKEN:?NOTIFIO_TOKEN is required}"
 : "${NOTIFIO_BODY:?NOTIFIO_BODY is required}"
 
-# A nonced secret never goes on the wire: what travels is a hash of it with the current time,
-# good for five minutes. Which kind this is, is legible from its own prefix, so the same
-# workflow works either way and migrating is swapping the secret.
-case "$NOTIFIO_TOKEN" in
-nts_*)
-	command -v sha256sum >/dev/null || {
-		echo "a nonced token needs sha256sum, which is not on PATH" >&2
-		exit 1
-	}
-	# The id is the first eight characters of sha256(secret), so the caller derives it rather
-	# than being given a second value to configure.
-	id=$(printf %s "$NOTIFIO_TOKEN" | sha256sum | cut -c1-8)
-	ts=$(date +%s)
-	mac=$(printf '%s.%s.%s' "$ts" "$id" "$NOTIFIO_TOKEN" | sha256sum | cut -d' ' -f1)
-	auth="ntc_$ts.$id.$mac"
-	;;
-*)
-	auth="$NOTIFIO_TOKEN"
-	;;
-esac
+# The secret never goes on the wire: what travels is a hash of it with the current time, good
+# for five minutes. See docs/nonced.md.
+command -v sha256sum >/dev/null || {
+	echo "notifio needs sha256sum, which is not on PATH" >&2
+	exit 1
+}
+key=$(printf %s "$NOTIFIO_TOKEN" | sha256sum | cut -d' ' -f1)
+id=$(printf %s "$key" | cut -c1-8)
+ts=$(date +%s)
+auth="ntc_$ts.$id.$(printf '%s.%s.%s' "$ts" "$id" "$key" | sha256sum | cut -d' ' -f1)"
 
 # Every field goes through --data-urlencode: -d would send a % or a & in the message raw, which
 # is either an invalid escape or a second field.

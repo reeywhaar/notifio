@@ -119,29 +119,18 @@ recovered. The doubled `notifio notifio` is not a typo: `docker exec` bypasses t
 
 The running server picks it up on the next request — there is nothing to restart.
 
-**Or mint one whose secret never crosses the wire:**
+**Or send a hash of it instead of the token.** Same token, nothing to choose at mint time:
 
 ```sh
-SECRET=$(docker exec notifio notifio token add grafana alerts --nonced)
+key=$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)
+id=$(printf %s "$key" | cut -c1-8)
+ts=$(date +%s)
+auth="ntc_$ts.$id.$(printf '%s.%s.%s' "$ts" "$id" "$key" | sha256sum | cut -d' ' -f1)"
+curl -X POST … -H "Authorization: Bearer $auth" --data-urlencode 'body=…'
 ```
 
-The caller then sends a hash of it with a timestamp, good for five minutes, instead of the
-secret itself — so a value captured from a log or a proxy is already useless. **It is still one
-value to configure**: the token id is `sha256(secret)[:8]`, derived by the caller rather than
-handed to it.
-
-```sh
-ID=$(printf %s "$SECRET" | sha256sum | cut -c1-8)
-TS=$(date +%s)
-WIRE="ntc_$TS.$ID.$(printf '%s.%s.%s' "$TS" "$ID" "$SECRET" | sha256sum | cut -d' ' -f1)"
-curl -X POST … -H "Authorization: Bearer $WIRE" --data-urlencode 'body=…'
-```
-
-[docs/nonced.md](docs/nonced.md#making-one) has that as a reusable bash function and as a
-TypeScript one, both of which take either kind of secret and branch on its prefix.
-
-It costs something real — notifio has to keep that secret in `data.json` in the clear, where a
-bearer token is only ever a hash. [docs/nonced.md](docs/nonced.md) has the trade in full.
+Good for five minutes, so a value captured from a log or a proxy is already useless.
+[docs/nonced.md](docs/nonced.md) has the TypeScript version and the reasoning.
 
 ### 4. Send
 
@@ -277,7 +266,6 @@ notifio serve                            the server. the image's CMD
 notifio version
 
 notifio token add <label> <channel>      mint one. prints the secret, once
-          [--nonced]                     ...one whose secret never crosses the wire
 notifio token list [--json]              label, channel, type, created
 notifio token remove <label>
 
@@ -342,8 +330,8 @@ report its builds. Two secrets, and nothing that says where the message lands:
 It prints nothing on success and the failure in full, so a green step stays quiet. The
 provider's message id is available as `outputs.id` rather than printed.
 
-Hand it a [nonced secret](docs/nonced.md) and it signs rather than sending — same workflow, the
-secret never leaves the runner.
+It hashes the token rather than sending it, so the secret never leaves the runner — see
+[docs/nonced.md](docs/nonced.md).
 
 Note that **the body appears in the log either way**: GitHub echoes a step's `with:` inputs
 before running it. Secrets are masked as `***`, so anything that must not be in a public build

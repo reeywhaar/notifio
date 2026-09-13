@@ -93,8 +93,9 @@ hash here would only slow every send.
 
 **The secret is printed once and is not stored.** A lost token is removed and minted again.
 
-A token minted with `--nonced` is the exception: its secret *is* stored, because verifying a
-hash means recomputing it. What that buys and what it costs is [nonced.md](nonced.md).
+The same token can also be sent as a hash with a timestamp rather than whole, which is
+[nonced.md](nonced.md). Nothing about minting or storage changes for that — it is the same
+token, presented differently.
 
 ## How a running server sees `docker exec`
 

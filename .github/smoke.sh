@@ -347,48 +347,37 @@ docker logs notifio 2>&1 | grep -q '"client":"1.2.3.4"' \
 	&& die "the caller's invented address was believed"
 printf '   ok   the rightmost entry wins and the prefix is ignored\n'
 
-step "a nonced token sends without its secret crossing the wire"
-NSECRET=$(docker exec notifio notifio token add nonced fixed --nonced)
-# Derived from the secret, not looked up: a caller is given one value, same as a bearer token.
-NID=$(printf %s "$NSECRET" | sha256sum | cut -c1-8)
-docker exec notifio notifio token list --json \
-	| grep -q "\"id\": \"$NID\"" || die "the derived id does not match the server's" 
-case "$NSECRET" in
-nts_*) ;;
-*) die "token add --nonced printed something other than a nonced secret" ;;
-esac
-
+step "the same token also works hashed with a nonce"
+# Nothing special at mint time: this is the token minted above, presented differently.
+KEY=$(printf %s "$FIXED" | sha256sum | cut -d' ' -f1)
+NID=$(printf %s "$KEY" | cut -c1-8)
 TS=$(date +%s)
-WIRE="ntc_$TS.$NID.$(printf '%s.%s.%s' "$TS" "$NID" "$NSECRET" | sha256sum | cut -d' ' -f1)"
+WIRE="ntc_$TS.$NID.$(printf '%s.%s.%s' "$TS" "$NID" "$KEY" | sha256sum | cut -d' ' -f1)"
 want 200 -X POST "$B" -H "Authorization: Bearer $WIRE" \
 	--data-urlencode 'subject=nonced' --data-urlencode 'body=x'
 
-# The secret itself must not work as a bearer token, or the protection would be optional.
-want 401 -X POST "$B" -H "Authorization: Bearer $NSECRET" \
-	--data-urlencode 'subject=s' --data-urlencode 'body=x'
+# ...and it is still a perfectly good bearer token.
+want 200 -X POST "$B" -H "Authorization: Bearer $FIXED" \
+	--data-urlencode 'subject=bearer too' --data-urlencode 'body=x'
 
-# And a captured value stops working once the window passes.
+# A captured value stops working once the window passes.
 OLD=$((TS - 600))
-STALE="ntc_$OLD.$NID.$(printf '%s.%s.%s' "$OLD" "$NID" "$NSECRET" | sha256sum | cut -d' ' -f1)"
+STALE="ntc_$OLD.$NID.$(printf '%s.%s.%s' "$OLD" "$NID" "$KEY" | sha256sum | cut -d' ' -f1)"
 want 401 -X POST "$B" -H "Authorization: Bearer $STALE" \
 	--data-urlencode 'subject=s' --data-urlencode 'body=x'
 
 docker logs notifio 2>&1 | grep -q '"auth":"nonced"' || die "the log does not record the auth kind"
-for secret in "$NSECRET"; do
-	if docker logs notifio 2>&1 | grep -qF "$secret"; then die "the nonced secret is in the log"; fi
-done
-printf '   ok   sent by hash, secret refused as bearer, stale nonce refused\n'
+docker exec notifio notifio token list --json | grep -q "\"id\": \"$NID\"" \
+	|| die "the derived id does not match the server's"
+printf '   ok   one token, sent whole or hashed; a stale nonce refused\n'
 
-# The same action, handed a nonced secret: it signs rather than sending it, so migrating is
-# swapping the secret with no workflow change.
-NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN="$NSECRET" \
-	NOTIFIO_SUBJECT="published, nonced" NOTIFIO_BODY="🔔 **notifio** published" \
+# The action hashes rather than sending, and the secret never reaches the wire or the log.
+NOTIFIO_HOST="http://127.0.0.1:$PORT" NOTIFIO_TOKEN="$FIXED" \
+	NOTIFIO_SUBJECT="published" NOTIFIO_BODY="🔔 **notifio** published" \
 	ghactions/notify/notify.sh >/dev/null \
-	|| die "the action could not send with a nonced secret"
-docker logs notifio 2>&1 | grep -q '"token":"nonced","auth":"nonced"' \
-	|| die "the action did not authenticate as nonced"
-docker logs notifio 2>&1 | grep -qF "$NSECRET" && die "the action put the nonced secret on the wire"
-printf '   ok   the same action signs a nonced secret and sends a bearer one\n'
+	|| die "the action could not send"
+docker logs notifio 2>&1 | grep -qF "$FIXED" && die "the token reached the server log"
+printf '   ok   the action hashes the token rather than sending it\n'
 
 step "a credential minted by a second process reaches the log"
 # docker exec is a different process, so this line is the only trace the server has.

@@ -1,6 +1,7 @@
 package tokens
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -253,18 +254,13 @@ func TestIDsAreDistinct(t *testing.T) {
 
 func TestNoncedRoundTrip(t *testing.T) {
 	s, _ := open(t)
-	secret, err := s.CreateNonced("ci", "tg")
+	secret, err := s.Create("ci", "tg")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(secret, SecretPrefix) {
-		t.Errorf("secret %q has no %q prefix", secret, SecretPrefix)
-	}
-	list, _ := s.List()
-	id := list[0].ID()
 	now := time.Now()
 
-	wire := Sign(id, secret, now)
+	wire := Sign(secret, now)
 	if !strings.HasPrefix(wire, NoncedPrefix) {
 		t.Errorf("wire value %q has no %q prefix", wire, NoncedPrefix)
 	}
@@ -284,9 +280,8 @@ func TestNoncedRoundTrip(t *testing.T) {
 // The whole point: what crosses the wire is not the credential.
 func TestTheWireValueIsNotTheSecret(t *testing.T) {
 	s, _ := open(t)
-	secret, _ := s.CreateNonced("ci", "tg")
-	list, _ := s.List()
-	wire := Sign(list[0].ID(), secret, time.Now())
+	secret, _ := s.Create("ci", "tg")
+	wire := Sign(secret, time.Now())
 
 	if strings.Contains(wire, secret) {
 		t.Fatal("the secret is in the wire value")
@@ -306,45 +301,13 @@ func TestTheWireValueIsNotTheSecret(t *testing.T) {
 	}
 }
 
-// A nonced secret must not work as a bearer token, or the protection would be optional.
-func TestANoncedSecretIsNotABearerToken(t *testing.T) {
-	s, _ := open(t)
-	secret, err := s.CreateNonced("ci", "tg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := s.Verify(secret); ok {
-		t.Fatal("a nonced secret was accepted as a bearer token")
-	}
-}
-
-// ...and the two kinds do not bleed into each other.
-func TestABearerTokenIsNotNonced(t *testing.T) {
-	s, _ := open(t)
-	secret, err := s.Create("plain", "tg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, _ := s.List()
-	if list[0].Nonced() {
-		t.Error("a bearer token reports itself nonced")
-	}
-	if list[0].Secret != "" {
-		t.Error("a bearer secret was stored")
-	}
-	// It has an id, but signing with it cannot verify: there is no stored secret to check.
-	if _, ok, _ := s.VerifyNonced(Sign(list[0].ID(), secret, time.Now()), time.Now()); ok {
-		t.Error("a bearer token verified as nonced")
-	}
-}
-
 func TestNoncedRejections(t *testing.T) {
 	s, _ := open(t)
-	secret, _ := s.CreateNonced("ci", "tg")
+	secret, _ := s.Create("ci", "tg")
 	list, _ := s.List()
 	id := list[0].ID()
 	now := time.Now()
-	good := Sign(id, secret, now)
+	good := Sign(secret, now)
 
 	cases := map[string]string{
 		"no prefix":        strings.TrimPrefix(good, NoncedPrefix),
@@ -352,7 +315,7 @@ func TestNoncedRejections(t *testing.T) {
 		"empty":            "",
 		"too few fields":   NoncedPrefix + "123" + Sep + id,
 		"too many fields":  good + Sep + "extra",
-		"nonce not digits": Sign(id, secret, now)[:len(NoncedPrefix)] + "12a4567890" + good[len(NoncedPrefix)+10:],
+		"nonce not digits": good[:len(NoncedPrefix)] + "12a4567890" + good[len(NoncedPrefix)+10:],
 		"unknown id":       NoncedPrefix + "1789310655" + Sep + "deadbeef" + Sep + strings.Repeat("a", 64),
 		"wrong mac":        good[:len(good)-1] + map[bool]string{true: "0", false: "1"}[good[len(good)-1] == '1'],
 		"short mac":        NoncedPrefix + "1789310655" + Sep + id + Sep + "abc",
@@ -364,5 +327,46 @@ func TestNoncedRejections(t *testing.T) {
 				t.Errorf("accepted %q", wire)
 			}
 		})
+	}
+}
+
+// One token, two ways to present it. That is the whole feature.
+func TestOneTokenBothWays(t *testing.T) {
+	s, _ := open(t)
+	secret, err := s.Create("ci", "tg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, _ := s.Verify(secret); !ok {
+		t.Error("the secret does not work as a bearer token")
+	}
+	if _, ok, _ := s.VerifyNonced(Sign(secret, time.Now()), time.Now()); !ok {
+		t.Error("the same secret does not work hashed with a nonce")
+	}
+}
+
+// Nothing recoverable is stored: the file holds a hash, as it always did.
+func TestTheFileStillHoldsOnlyAHash(t *testing.T) {
+	s, dir := open(t)
+	secret, err := s.Create("ci", "tg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) {
+		t.Error("the secret is in data.json")
+	}
+	var f struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Version != 1 {
+		t.Errorf("version = %d; nothing about the format changed", f.Version)
 	}
 }
